@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>工程任务拆分与分派</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f3ee;color:#192b25;font:16px/1.5 "Inter","Microsoft YaHei",sans-serif}header{background:#173c32;color:white;padding:32px max(5vw,20px)}h1,h2,p{margin:0 0 12px}main{max-width:1150px;margin:auto;padding:24px;display:grid;gap:18px}section{padding:22px;background:white;border:1px solid #d7dfd8;border-radius:12px}textarea,input,select,button{font:inherit;padding:8px;border:1px solid #9eb1a7;border-radius:6px;color:inherit}textarea{width:100%;margin-bottom:12px}button{cursor:pointer;background:#17563f;color:white}button.secondary{background:white;color:#17563f}button+button{margin-left:8px}label{display:block}small{color:#48665a}fieldset{border:1px solid #d7dfd8;border-radius:8px;margin:12px 0;padding:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}fieldset input,fieldset select{width:100%}legend{padding:0 8px;font-weight:bold}.members{display:flex;flex-wrap:wrap;gap:12px}.members input{width:130px}article{border-top:1px solid #d7dfd8;padding:12px 0}#message{color:#94401e}[hidden]{display:none!important}
+</style>
+<header><h1>工程任务拆分与分派</h1><p>工程描述 → 分工草案 → 发布到人</p></header>
+<main>
+<section><h2>工程描述</h2><label for="job">写清施工范围、变更内容或材料约束</label><textarea id="job" rows="3" maxlength="800" placeholder="例如：客厅和走廊从分区铺砖改为通铺，瓷砖可能晚到两天"></textarea><button id="generate">生成分工草案</button><button id="example" class="secondary">填入示例</button></section>
+<section><h2>项目成员</h2><div id="members" class="members"></div><small>输入实际姓名。生成草案时会按角色推荐成员，空缺的岗位待指派。</small></section>
+<section id="draftSection" hidden><h2>待确认的分工草案</h2><p id="template"></p><form id="draft"><div id="tasks"></div><button>确认并发布</button></form></section>
+<p id="message" role="status" aria-live="polite"></p>
+<section id="published" hidden><h2>已发布待办</h2><p id="scope"></p><label>查看成员 <select id="filter"></select></label><div id="items"></div></section>
+</main>
+<script>
+const roles=['设计师','材料负责人','施工负责人','项目经理'];
+const defaults=['王工','陈工','赵工','李工'];
+const key='bohack-renovation-task-breakdown-v1';
+const $=id=>document.getElementById(id);
+function load(){
+  try{return JSON.parse(localStorage.getItem(key))||{};}
+  catch{return {};}
+}
+let saved=load();
+let draft=[];
+let scope='';
+function persist(next){
+  try{localStorage.setItem(key,JSON.stringify(next));saved=next;return true;}
+  catch{$('message').textContent='浏览器无法保存本地记录。请允许本地存储后重试。';return false;}
+}
+function splitTask(description){
+  const tile=/瓷砖|铺砖|通铺|美缝/.test(description);
+  const material=/材料|到货|供货|缺货/.test(description);
+  const first=tile?['确认铺砖范围、铺法与对齐方式','确认版铺砖图']:['核对工程范围和施工要求','确认版工程范围与施工要求'];
+  const specs=[
+    [...first,0,[]],
+    [tile?'核对瓷砖用量与到货日期':'核对材料供应和到场日期','材料清单与到货承诺',1,[0]],
+    [tile?'确认铺砖人员和可开工日期':'确认施工人员、工序与可开工日期','施工安排和最早开工时间',2,[0]],
+    ['核对工期影响并确认排期','批准后的施工计划',3,[1,2]],
+    [tile?'执行铺砖并提交验收材料':'执行施工并提交验收材料','现场记录和验收材料',2,[3]]
+  ];
+  return {name:tile?'铺砖流程模板':material?'含材料协调的施工模板':'通用施工模板',tasks:specs};
+}
+function validate(tasks){
+  if(tasks.some(t=>!t.title||!t.owner||!t.output||!t.due))return '请给每项任务填写名称、负责人、交付物和截止日期。';
+  for(let i=0;i<tasks.length;i++){
+    if(tasks[i].deps.some(d=>d>=i||d<0))return '前置任务必须排在当前任务之前。';
+    if(tasks[i].deps.some(d=>tasks[d].due>tasks[i].due))return '任务 '+(i+1)+' 的截止日期不能早于其前置任务。';
+  }
+  return '';
+}
+function field(label,value,name,type='text'){
+  const wrap=document.createElement('label');
+  wrap.textContent=label;
+  const input=document.createElement('input');
+  input.name=name;input.type=type;input.value=value;input.required=true;
+  wrap.append(input);
+  return wrap;
+}
+function members(){return [...$('members').querySelectorAll('input')].map(x=>x.value.trim());}
+roles.forEach((role,i)=>{
+  const label=field(role,(saved.members||defaults)[i],'member'+i);
+  label.firstElementChild.required=false;
+  $('members').append(label);
+});
+$('example').onclick=()=>{$('job').value='客厅和走廊从分区铺砖改为全屋通铺，瓷砖可能晚到两天';};
+$('generate').onclick=()=>{
+  scope=$('job').value.trim();
+  if(!scope){$('message').textContent='请先输入工程描述。';return;}
+  const result=splitTask(scope), people=members();
+  draft=result.tasks.map(([title,output,role,deps])=>({title,output,role,deps,owner:people[role],due:''}));
+  $('template').textContent=result.name+' · 系统按规则生成，可修改后发布';
+  $('tasks').replaceChildren(...draft.map((t,i)=>{
+    const block=document.createElement('fieldset');
+    const legend=document.createElement('legend');
+    legend.textContent='任务 '+(i+1);
+    const deps=document.createElement('small');
+    deps.textContent='前置任务：'+(t.deps.map(d=>d+1).join('、')||'无')+' · 建议角色：'+roles[t.role];
+    block.append(legend,field('任务名称',t.title,'title'+i),field('负责人',t.owner,'owner'+i),field('交付物',t.output,'output'+i),field('截止日期',t.due,'due'+i,'date'),deps);
+    return block;
+  }));
+  $('draftSection').hidden=false;
+  $('message').textContent='';
+};
+$('draft').onsubmit=event=>{
+  event.preventDefault();
+  if($('job').value.trim()!==scope){$('message').textContent='工程描述已修改，请重新生成草案。';return;}
+  const data=new FormData(event.currentTarget);
+  const tasks=draft.map((t,i)=>({...t,...Object.fromEntries(['title','owner','output','due'].map(f=>[f,String(data.get(f+i)||'').trim()])),done:false}));
+  const error=validate(tasks);
+  if(error){$('message').textContent=error;return;}
+  if(saved.tasks && !confirm('发布新分工将替换当前浏览器中的待办，继续？'))return;
+  if(!persist({members:members(),scope,tasks}))return;
+  $('draftSection').hidden=true;
+  $('message').textContent='已发布 '+tasks.length+' 项待办。';
+  renderPublished(true);
+};
+function renderPublished(resetFilter=false){
+  if(!saved.tasks)return;
+  $('published').hidden=false;$('scope').textContent=saved.scope;
+  const filter=$('filter');
+  const current=resetFilter?'':filter.value;
+  filter.replaceChildren(new Option('所有成员',''),...[...new Set(saved.tasks.map(t=>t.owner))].map(n=>new Option(n,n)));
+  filter.value=current;
+  $('items').replaceChildren(...saved.tasks.flatMap((t,i)=>{
+    if(filter.value && filter.value!==t.owner)return [];
+    const row=document.createElement('article'),title=document.createElement('strong'),info=document.createElement('p'),button=document.createElement('button');
+    const pending=t.deps.filter(d=>!saved.tasks[d].done);
+    title.textContent=(i+1)+'. '+t.title;
+    info.textContent=t.owner+' · 截止 '+t.due+' · 交付 '+t.output+' · '+(t.done?'已完成':pending.length?'等待任务 '+pending.map(d=>d+1).join('、'):'可开始');
+    button.textContent=t.done?'已完成':'标记完成';
+    button.disabled=t.done||pending.length>0;
+    button.onclick=()=>{
+      if(saved.tasks[i].deps.some(d=>!saved.tasks[d].done))return;
+      if(persist({...saved,tasks:saved.tasks.map((task,j)=>i===j?{...task,done:true}:task)}))renderPublished();
+    };
+    row.append(title,info,button);return [row];
+  }));
+}
+$('filter').onchange=()=>renderPublished();
+renderPublished();
+</script>
+</html>
