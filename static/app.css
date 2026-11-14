@@ -124,3 +124,7 @@ input:focus,textarea:focus,select:focus{border-color:#b08b4e;outline:2px solid #
 .contractor-home>button,.contractor-home .buttons>button{min-height:44px}
 .contractor-home summary{padding:8px 0}
 @media(max-width:720px){.contractor-home button{min-height:44px}.contractor-home p{font-size:15px}}
+.demo-guide{margin-bottom:16px;padding:clamp(16px,3vw,28px)}
+.demo-guide h2{margin:12px 0 6px}
+.demo-guide .buttons button{min-height:46px}
+.guide-details{margin-bottom:16px}

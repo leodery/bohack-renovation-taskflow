@@ -15,9 +15,10 @@ import time
 from flask import Flask, g, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import domain as rules
-from analysis_service import analyze, review_evidence
+from analysis_service import analyze, review_evidence, analyze_site_note
 from demo_case import PEOPLE, TITLE, populate, prepare_refund
 import schedule
 from photo_review import TASK_STANDARDS, ANGLES, CONTENT, inspect_photo
@@ -27,6 +28,9 @@ ROOT = Path(__file__).resolve().parent
 
 def create_app(data_dir=None, demo_access=False):
     app = Flask(__name__, static_folder='static')
+    public_demo_host = os.getenv('TASKFLOW_PUBLIC_DEMO_HOST', '')
+    if public_demo_host:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     app.json.ensure_ascii = False
     app.config.update(MAX_CONTENT_LENGTH=10 * 1024 * 1024, MAX_FORM_PARTS=12)
     folder = Path(data_dir or os.getenv('TASKFLOW_DATA_DIR', str(ROOT / 'instance')))
@@ -98,6 +102,11 @@ def create_app(data_dir=None, demo_access=False):
 
     @app.before_request
     def authenticate():
+        if public_demo_host:
+            rules.check(request.host == public_demo_host and request.is_secure,
+                        '请使用展台的 HTTPS 链接。',403)
+            rules.check(request.path not in ('/api/register','/api/login','/api/join')
+                        and not request.path.endswith('/invitations'), '展台使用独立演示账号。',403)
         if not request.path.startswith('/api/'):
             return
         if request.method not in ('GET', 'HEAD', 'OPTIONS'):
@@ -168,6 +177,8 @@ def create_app(data_dir=None, demo_access=False):
         return response
 
     def demo_available():
+        if public_demo_host:
+            return demo_access and request.host == public_demo_host and request.is_secure
         return (demo_access and request.remote_addr in ('127.0.0.1', '::1')
                 and request.host.partition(':')[0] in ('127.0.0.1', 'localhost'))
 
@@ -449,6 +460,11 @@ def create_app(data_dir=None, demo_access=False):
                                   len(encoded), encoded, actor['id'], at))
                     return {'id': fid, 'kind': kind, 'reference': reference, 'change_id': change['id'], 'at': at}
                 change = prepare_refund(project, g.user, members(project_id), add_file)
+            if not rules.approved(change, 'owner'):
+                rules.approve(project, change, g.user, {
+                    'kind': 'owner', 'decision': 'approve',
+                    'note': '演示确认：仅保留客厅通铺，已核对预计返费 600 元及调整后的交付日期。',
+                }, files(project_id))
         return jsonify(project=project_view(project_id), change_id=change['id'])
 
     @app.post('/api/projects/<project_id>/changes/<change_id>/<command>')
@@ -489,7 +505,11 @@ def create_app(data_dir=None, demo_access=False):
             change = next((c for c in project['changes'] if c['id'] == change_id and c.get('published_plan') and c['tasks']), None)
             rules.check(change, '请先发布施工计划。', 409)
             return jsonify(schedule.preview(change, data.get('nodes'), data.get('fees', {})))
-        rules.check(command in ('save', 'propose', 'decide', 'publish'), '操作不存在。', 404)
+        if command=='analyze-note':
+            project = json.loads(project_row(project_id)['data'])
+            rules.check(any(c['id']==change_id for c in project['changes']), '变更不存在。',404)
+            return jsonify(analyze_site_note(rules.required(data.get('text'),'施工备注',500)))
+        rules.check(command in ('save', 'propose', 'decide', 'publish', 'rehearse'), '操作不存在。', 404)
         with edit_project(project_id, data.get('revision')) as project:
             change = next((c for c in project['changes'] if c['id'] == change_id), None)
             rules.check(change, '变更不存在。', 404)
@@ -498,7 +518,23 @@ def create_app(data_dir=None, demo_access=False):
                 available = {(f['kind'], f['reference']) for f in files(project_id) if f['change_id']==change_id}
                 rules.check({('drawing',kitchen['drawing']),('quote',kitchen['quote_reference'])}<=available,
                             '缺少新版图纸或换砖报价。', 409)
-            schedule.handle(project, change, g.user, command, data)
+            if command=='rehearse':
+                profiles=demo_profiles(request.cookies.get('taskflow_demo',''))
+                rules.check(demo_available() and project.get('synthetic') and change.get('kitchen_change')
+                            and profiles.get('coordinator',{}).get('id')==g.user['id']
+                            and project.get('demo_creator_id')==g.user['id'], '仅自己的厨房演示可准备确认。',403)
+                active=change.get('schedule_proposals',[])
+                rules.check(active and active[-1]['status']=='pending' and active[-1]['id']==data.get('proposal_id'),
+                            '请先提交可行排程。',409)
+                proposal=active[-1]
+                for kind, role in [('design','designer'),('construction','contractor')]:
+                    simulated=profiles[role]
+                    rules.check(proposal['approvers'][kind]==simulated['id'], '演示确认人不匹配。',409)
+                    if kind not in proposal['decisions']:
+                        schedule.handle(project,change,simulated,'decide',
+                                        {'proposal_id':proposal['id'],'decision':'approve','note':'路演预置确认（合成案例）'})
+            else:
+                schedule.handle(project, change, g.user, command, data)
         return jsonify(project_view(project_id))
 
     @app.post('/api/projects/<project_id>/changes/<change_id>/files')
@@ -631,4 +667,11 @@ if __name__ == '__main__':
     print(f'工序共识已启动：http://localhost:{port}', flush=True)
     host = os.getenv('TASKFLOW_HOST', '0.0.0.0')
     demo_access = os.getenv('TASKFLOW_DEMO_ACCESS') == '1' and host == '127.0.0.1'
-    serve(create_app(demo_access=demo_access), host=host, port=port, threads=8, max_request_body_size=10 * 1024 * 1024)
+    proxy = {}
+    if os.getenv('TASKFLOW_PUBLIC_DEMO_HOST'):
+        if host != '127.0.0.1' or not demo_access:
+            raise SystemExit('Public demo requires a loopback-only backend.')
+        proxy = {'trusted_proxy':'127.0.0.1',
+                 'trusted_proxy_headers':{'x-forwarded-for','x-forwarded-proto','x-forwarded-host'}}
+    serve(create_app(demo_access=demo_access), host=host, port=port, threads=8,
+          max_request_body_size=10 * 1024 * 1024, **proxy)
