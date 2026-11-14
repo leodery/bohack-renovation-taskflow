@@ -18,7 +18,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import domain as rules
-from analysis_service import analyze, review_evidence, analyze_site_note
+from analysis_service import analyze, review_evidence, analyze_site_note, translate_project_text
 from demo_case import PEOPLE, TITLE, populate, prepare_refund
 import schedule
 from photo_review import TASK_STANDARDS, ANGLES, CONTENT, inspect_photo
@@ -431,14 +431,30 @@ def create_app(data_dir=None, demo_access=False):
     @app.post('/api/projects/<project_id>/changes')
     def create_change(project_id):
         project_row(project_id)
-        rules.check(g.user['role'] == 'owner', '请由住户账号提出装修要求。', 403)
         data = payload()
+        simple = data.get('simple') is True
+        role = g.user['role']
+        rules.check(role == 'owner' or (simple and role == 'contractor'),
+                    '请由住户提出需求，或由施工方上报材料变更。', 403)
         text = rules.required(data.get('text'), '住户变更要求')
         template_id = data.get('template_id', 'tiles')
         rules.check(isinstance(template_id, str) and template_id in rules.TEMPLATES, '请选择有效的工序模板。')
-        analysis = analyze(text, template_id)
+        analysis = ({'mode': 'rules', 'label': '住户变更', 'facts': [], 'questions': []}
+                    if simple else analyze(text, template_id))
+        wording = translate_project_text(text, True) if simple else None
         with edit_project(project_id, data.get('revision')) as project:
             change = rules.new_change(project, g.user, text, members(project_id), analysis, template_id)
+            if simple:
+                owner_id = g.user['id'] if role == 'owner' else next(
+                    (person['id'] for person in members(project_id) if person['role'] == 'owner'), None)
+                rules.check(owner_id, '请先邀请住户加入项目。', 409)
+                change['collaboration'] = {
+                    'wording': wording, 'version': 1, 'decisions': {}, 'status': 'review',
+                    'trigger': 'materials' if role == 'contractor' else 'request',
+                    'owner_id': owner_id,
+                    'proposal': text,
+                }
+                rules.current(change)['approvers']['owner'] = owner_id
             change_id = change['id']
         return jsonify(project=project_view(project_id), change_id=change_id), 201
 
@@ -467,6 +483,23 @@ def create_app(data_dir=None, demo_access=False):
                 }, files(project_id))
         return jsonify(project=project_view(project_id), change_id=change['id'])
 
+    @app.post('/api/projects/<project_id>/changes/<change_id>/translate')
+    def translate_change(project_id, change_id):
+        project = json.loads(project_row(project_id)['data'])
+        change = next((c for c in project['changes'] if c['id'] == change_id), None)
+        rules.check(change is not None, '变更不存在。', 404)
+        event_id = payload().get('event_id')
+        if g.user['role'] == 'owner':
+            participants = {m['id'] for m in members(project_id)
+                            if m['role'] in ('designer', 'contractor', 'coordinator')}
+            event = next((e for e in project['events'] if e['id'] == event_id
+                          and e['change_id'] == change_id and e['actor_id'] in participants), None)
+            rules.check(event is not None, '请选择本次变更的专业方记录。', 404)
+            return jsonify(translate_project_text(event['detail'], False))
+        rules.check(g.user['role'] in ('designer', 'contractor', 'coordinator') and not event_id,
+                    '请查看本次变更的住户原话。', 403)
+        return jsonify(translate_project_text(change['source']['text'], True))
+
     @app.post('/api/projects/<project_id>/changes/<change_id>/<command>')
     def change_action(project_id, change_id, command):
         data = payload()
@@ -474,7 +507,60 @@ def create_app(data_dir=None, demo_access=False):
             change = next((c for c in project['changes'] if c['id'] == change_id), None)
             rules.check(change is not None, '变更不存在。', 404)
             rules.check(g.user['role'] != 'mediator' or command == 'dispute', '外部复核账号仅能提交争议意见。', 403)
-            if command == 'revise':
+            collaboration = change.get('collaboration')
+            if collaboration:
+                rules.check(command in ('comment', 'feasibility'), '请使用当前变更单的协商操作。', 409)
+                if command == 'feasibility':
+                    role = g.user['role']
+                    status = collaboration['status']
+                    decisions = collaboration['decisions']
+                    rules.check(data.get('version') == collaboration['version'], '版本已变更，请刷新。', 409)
+                    note = rules.required(data.get('note'), '确认说明', 500)
+                    decision = data.get('decision')
+                    review_role = {'designer': 'design', 'contractor': 'construction'}.get(role)
+                    approvers = rules.current(change)['approvers']
+                    if review_role and not approvers[review_role] and status in ('review', 'returned'):
+                        approvers[review_role] = g.user['id']
+                    if decision == 'revise':
+                        rules.check((status in ('returned', 'review') or (status == 'owner'
+                                    and change['baseline']['version'] != project['plan']['version'])) and review_role
+                                    and rules.current(change)['approvers'][review_role] == g.user['id'],
+                                    '仅指定设计师或施工方可重新提交。', 403)
+                        collaboration.update(status='review', version=collaboration['version']+1,
+                                             decisions={}, proposal=note)
+                        change['baseline'] = dict(project['plan'])
+                    elif status == 'owner':
+                        rules.check(g.user['id'] == collaboration.get('owner_id', change['source']['author_id']),
+                                    '请由项目住户确认。', 403)
+                        rules.check(decision in ('approve', 'return'), '请选择确认或退回。')
+                        if decision == 'approve':
+                            rules.check(change['baseline']['version'] == project['plan']['version'],
+                                        '执行方案已更新，请基于新版修订后重新确认。', 409)
+                            decisions['owner'] = {'note': note, 'decision': decision}
+                        collaboration['status'] = 'active' if decision == 'approve' else 'returned'
+                    else:
+                        rules.check(status == 'review' and review_role
+                                    and rules.current(change)['approvers'][review_role] == g.user['id'],
+                                    '当前身份或阶段无法确认。', 403)
+                        rules.check(role not in decisions, '本版本已确认。', 409)
+                        rules.check(decision in ('approve', 'return'), '请选择确认或退回。')
+                        decisions[role] = {'note': note, 'decision': decision}
+                        if decision == 'return':
+                            collaboration['status'] = 'returned'
+                        elif len(decisions) == 2:
+                            collaboration['status'] = 'owner'
+                    action = {'approve': '确认可行', 'return': '退回方案', 'revise': '提交修订'}[decision]
+                    rules.event(project, g.user, f"变更 v{collaboration['version']} · {action}", note, change_id)
+                    if collaboration['status'] == 'active':
+                        collaboration['activated_at'] = rules.now()
+                        plan = project['plan']
+                        plan.update(version=plan['version']+1,
+                                    text=plan['text'] + '\n本次已确认调整：' + collaboration.get('proposal', change['source']['text']),
+                                    change_id=change_id, change_version=collaboration['version'])
+                else:
+                    rules.check(g.user['role'] in ('owner','designer','contractor'), '请由协作方留言。', 403)
+                    rules.event(project, g.user, '协商留言', rules.required(data.get('text'), '留言'), change_id)
+            elif command == 'revise':
                 rules.revise(project, change, g.user, data, members(project_id))
             elif command == 'approve':
                 rules.approve(project, change, g.user, data, files(project_id))
@@ -573,7 +659,12 @@ def create_app(data_dir=None, demo_access=False):
         with edit_project(project_id, expected) as project:
             change = next((c for c in project['changes'] if c['id'] == change_id), None)
             rules.check(change is not None, '变更不存在。', 404)
-            if kind in ('drawing', 'quote'):
+            if change.get('collaboration'):
+                rules.check(kind == 'site', '请在此变更单上传现场照片。', 409)
+                rules.check(Path(name).suffix.lower() in ('.jpg', '.jpeg', '.png')
+                            and (content.startswith(b'\x89PNG\r\n\x1a\n') or content.startswith(b'\xff\xd8\xff')),
+                            '请选择 JPG 或 PNG 照片。')
+            elif kind in ('drawing', 'quote'):
                 rules.check(change['status'] == 'clarifying', '请在澄清阶段补充审批资料。', 409)
                 rules.check(not any(rules.approved(change, k) for k in rules.APPROVAL_ROLES), '当前版本已有确认，请先创建修订再补充审批材料。', 409)
             else:

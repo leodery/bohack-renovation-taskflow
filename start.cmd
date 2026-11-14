@@ -8,7 +8,6 @@ if /i "%~1"=="demo" (
   set "TASKFLOW_DEMO_ACCESS=1"
   set "TASKFLOW_KITCHEN_DEMO=1"
   set "TASKFLOW_DATA_DIR=%~dp0instance\kitchen-demo"
-  set "TASKFLOW_MODEL_KEY="
 )
 if not exist ".venv\Scripts\python.exe" (
   py -3 -m venv .venv
