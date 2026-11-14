@@ -12,7 +12,7 @@ import secrets
 import sqlite3
 import time
 
-from flask import Flask, g, jsonify, request, send_file
+from flask import Flask, g, jsonify, redirect, request, send_file
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -150,6 +150,8 @@ def create_app(data_dir=None, demo_access=False):
 
     @app.get('/')
     def index():
+        if public_demo_host and request.args.get('show') == '1':
+            return redirect('/')
         return app.send_static_file('index.html')
 
     @app.get('/api/health')
