@@ -1,0 +1,44 @@
+/* The opening has its own palette. Workspace components use app.css. */
+.opening { --serif: 'Songti SC', SimSun, Georgia, serif; }
+.opening{min-height:100svh;background:#fff;color:#202020;padding:0 clamp(24px,5.5vw,88px)}
+.opening-header{height:108px;max-width:1440px;margin:auto;border-bottom:1px solid #ddd;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.opening-brand{font-family:var(--serif);font-size:25px;letter-spacing:.1em;text-decoration:none;color:#1f1f1f}
+.opening-brand span{display:block;font:10px/1.8 -apple-system,BlinkMacSystemFont,'Microsoft YaHei',sans-serif;color:#666;letter-spacing:.16em;margin-top:2px}
+.opening button.opening-skip{display:flex;align-items:center;gap:22px;background:transparent;color:#333;padding:8px 0;border:0;min-height:44px;font-size:12px;font-weight:400}
+.opening button.opening-skip:hover{background:transparent;text-decoration:underline}
+.opening-main{max-width:1280px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(56px,8vw,128px);padding:72px 0;align-items:center}
+.opening-kicker{font-size:11px;letter-spacing:.15em;color:#666}
+.intro-copy h1{font-family:var(--serif);font-weight:400;font-size:clamp(34px,3.5vw,54px);line-height:1.55;letter-spacing:.02em;margin:20px 0}
+.opening-lead{font-size:13px;line-height:2;color:#626262}
+.opening-directory{max-width:440px;margin-top:32px;border-top:1px solid #ddd}
+.directory-caption{display:block;font-size:10px;color:#777;letter-spacing:.08em;margin:15px 0 6px}
+.opening-directory button{display:grid;grid-template-columns:20px 70px minmax(0,1fr) 16px;align-items:center;gap:12px;width:100%;min-height:53px;padding:12px 0;text-align:left;border:0;border-bottom:1px solid #e5e5e5;border-radius:0;background:transparent;color:#222;font-size:14px;font-weight:400}
+.opening-directory button:hover{background:#f5f5f5}
+.directory-number{font-size:10px;color:#777;font-variant-numeric:tabular-nums}
+.directory-description{font-size:11px;color:#6a6a6a}
+.opening-directory button>span:last-child{text-align:right}
+.opening-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap;max-width:440px;margin-top:24px}
+.opening button.opening-film{font-size:11px;font-weight:400;min-height:44px;background:transparent;color:#333;padding:5px 0;border:0;border-bottom:1px solid #aaa;border-radius:0;display:flex;align-items:center;gap:18px}
+.opening button.opening-film:hover{background:transparent;color:#111}
+.opening-note{font-size:10px;line-height:1.8;color:#777}
+.opening-material{margin:0;min-width:0}
+.opening-material img{display:block;width:100%;height:auto;aspect-ratio:1.03;object-fit:cover;filter:grayscale(1);background:#f1f1f1;border-radius:2px}
+.opening-material figcaption{display:flex;justify-content:space-between;gap:14px;font-size:10px;color:#777;margin-top:12px}
+.opening-footer{max-width:1440px;margin:auto;border-top:1px solid #ddd;display:flex;justify-content:space-between;gap:20px;font-size:10px;color:#777;padding:24px 0}
+/* Existing Swarm demonstration is confined to the opening explanation. */
+#collaboration-story{width:min(880px,calc(100vw - 32px));max-height:90svh;padding:28px;border:1px solid #ddd;border-radius:8px;color:#222;background:white;box-shadow:0 24px 80px #0003}
+#collaboration-story::backdrop{background:#0007}.story-dialog-head{display:flex;justify-content:space-between;gap:20px;align-items:start}
+.story-dialog-head h2{font-size:22px;margin-top:8px}.story-dialog-head button{flex-shrink:0;min-height:44px}
+#collaboration-story .eyebrow{font-size:11px;color:#666;letter-spacing:.1em}#story-description{font-size:13px;color:#666;margin:16px 0 20px}
+#story-scene iframe{display:block;width:100%;height:440px;border:1px solid #ddd;border-radius:4px;background:#f5f5f5}
+@media(max-width:1050px){.opening-main{gap:48px;padding:54px 0}.intro-copy h1{font-size:40px}.directory-description{font-size:10px}}
+@media(max-width:720px){.opening-header{height:88px}.opening-brand{font-size:21px}.opening-skip{gap:12px;font-size:11px}.opening-main{grid-template-columns:1fr;padding:36px 0;gap:32px}.intro-copy h1{font-size:clamp(33px,7.8vw,46px);margin:18px 0}.opening-lead{font-size:13px}.opening-directory{max-width:none;margin-top:24px}.opening-directory button{grid-template-columns:18px 64px minmax(0,1fr) 14px;gap:9px;min-height:56px}.directory-description{font-size:10px}.opening-material img{aspect-ratio:1.6}.opening-actions{margin-top:20px;gap:10px}.opening-footer{flex-direction:column;gap:6px;padding:20px 0}.story-dialog-head{flex-wrap:wrap}.story-dialog-head h2{font-size:20px}#collaboration-story{padding:20px}#story-scene iframe{height:540px}}
+@media(prefers-reduced-motion:reduce){.opening *, #collaboration-story *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+@media print{.opening,[data-return-opening],#collaboration-story{display:none!important}}
+
+.opening button:focus-visible, .opening a:focus-visible, #collaboration-story button:focus-visible {
+  outline: 2px solid #454545;
+  outline-offset: 3px;
+}
+.opening-directory button:disabled { cursor: wait; }
+@media (max-width: 380px) { .opening { padding-inline: 16px; } }

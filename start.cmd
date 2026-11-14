@@ -17,7 +17,7 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
   )
 )
-".venv\Scripts\python.exe" -c "import flask, waitress, PIL" >nul 2>&1
+".venv\Scripts\python.exe" -c "import flask, waitress, PIL, pypdf" >nul 2>&1
 if errorlevel 1 (
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt
   if errorlevel 1 (

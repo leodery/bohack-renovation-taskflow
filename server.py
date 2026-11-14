@@ -1,6 +1,6 @@
 """Four-party renovation collaboration, with transactional shared state."""
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
@@ -21,7 +21,7 @@ import domain as rules
 from analysis_service import analyze, review_evidence, analyze_site_note, translate_project_text
 from demo_case import PEOPLE, TITLE, populate, prepare_refund
 import schedule
-from photo_review import TASK_STANDARDS, ANGLES, CONTENT, inspect_photo
+from photo_review import TASK_STANDARDS, ANGLES, CONTENT, inspect_photo, read_evidence_photo
 
 ROOT = Path(__file__).resolve().parent
 
@@ -126,9 +126,15 @@ def create_app(data_dir=None, demo_access=False):
     @app.after_request
     def headers(response):
         response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['X-Frame-Options'] = 'DENY'
+        scene = request.endpoint == 'static' and request.view_args.get('filename') == 'collaboration-scene.html'
+        ancestors = "'self'" if scene else "'none'"
+        styles = "'self' 'unsafe-inline'" if scene else "'self'"
+        response.headers['X-Frame-Options'] = 'SAMEORIGIN' if scene else 'DENY'
         response.headers['Referrer-Policy'] = 'same-origin'
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        response.headers['Content-Security-Policy'] = (
+            f"default-src 'self'; script-src 'self'; style-src {styles}; img-src 'self' data:; "
+            f"object-src 'none'; frame-ancestors {ancestors}; base-uri 'none'"
+        )
         if request.path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
         return response
@@ -211,16 +217,19 @@ def create_app(data_dir=None, demo_access=False):
     @app.post('/api/demo-login')
     def demo_login():
         rules.check(demo_available(), '此服务未开启本机演示登录。', 404)
-        role = payload().get('role')
+        data = payload()
+        role = data.get('role')
         rules.check(isinstance(role, str) and role in ('coordinator', *PEOPLE), '请选择演示身份。')
         auth_rate_limit()
-        browser_token = request.cookies.get('taskflow_demo', '')
+        reset = data.get('reset') is True
+        rules.check(not reset or role == 'coordinator', '请先初始化演示项目。')
+        browser_token = '' if reset else request.cookies.get('taskflow_demo', '')
         with transaction() as connection:
             profiles = demo_profiles(browser_token)
             if not profiles:
-                rules.check(role == 'coordinator', '请先选择中介方并创建演示案例。', 409)
+                rules.check(role == 'coordinator', '请先选择项目管理并创建演示案例。', 409)
                 browser_token = secrets.token_urlsafe(32)
-                for key, name in {'coordinator': '中介方（演示）', **PEOPLE}.items():
+                for key, name in {'coordinator': '项目管理（演示）', **PEOPLE}.items():
                     uid = rules.ident()
                     person = {'id': uid, 'username': 'demo_' + uid, 'name': name, 'role': key}
                     connection.execute('INSERT INTO users VALUES(?,?,?,?,?)', (*person.values(), '!'))
@@ -229,7 +238,7 @@ def create_app(data_dir=None, demo_access=False):
                     profiles[key] = person
             project_id = demo_project_id(profiles['coordinator']['id'])
             if role != 'coordinator':
-                rules.check(project_id, '请先选择中介方并创建演示案例。', 409)
+                rules.check(project_id, '请先选择项目管理并创建演示案例。', 409)
         response = login_response(profiles[role], demo_project_id=project_id)
         response.set_cookie('taskflow_demo', browser_token, max_age=86400 * 7, httponly=True,
                             samesite='Strict', secure=request.is_secure)
@@ -337,7 +346,7 @@ def create_app(data_dir=None, demo_access=False):
 
     @app.post('/api/projects')
     def create_project():
-        rules.check(g.user['role'] == 'coordinator', '请由中介方创建项目并邀请其他参与方。', 403)
+        rules.check(g.user['role'] == 'coordinator', '请由项目管理创建项目并邀请其他参与方。', 403)
         rules.check(not is_demo_profile(), '演示身份请使用「直接体验示例」。', 403)
         data = payload()
         title = rules.required(data.get('title'), '项目名称', 100)
@@ -364,7 +373,8 @@ def create_app(data_dir=None, demo_access=False):
     @app.post('/api/projects/demo')
     def create_demo():
         actor = g.user
-        rules.check(actor['role'] == 'coordinator', '请使用中介方账号体验此案例。', 403)
+        simple = payload().get('simple') is True
+        rules.check(actor['role'] == 'coordinator', '请使用项目管理账号体验此案例。', 403)
         with transaction() as connection:
             project_id = demo_project_id(actor['id'])
             existing = bool(project_id)
@@ -391,7 +401,7 @@ def create_app(data_dir=None, demo_access=False):
                     return {'id': file_id, 'change_id': change_id, 'version': version,
                             'kind': kind, 'reference': reference, 'name': name, 'at': stamp}
 
-                project = populate(actor, participants, add_file, kitchen=os.getenv('TASKFLOW_KITCHEN_DEMO')=='1')
+                project = populate(actor, participants, add_file, kitchen=os.getenv('TASKFLOW_KITCHEN_DEMO')=='1', simple=simple)
                 project['demo_creator_id'] = actor['id']
                 connection.execute('UPDATE projects SET data=? WHERE id=?',
                                    (json.dumps(project, ensure_ascii=False), project_id))
@@ -399,7 +409,7 @@ def create_app(data_dir=None, demo_access=False):
 
     @app.post('/api/projects/<project_id>/invitations')
     def invite(project_id):
-        rules.check(g.user['role'] == 'coordinator', '仅中介方可邀请项目成员。', 403)
+        rules.check(g.user['role'] == 'coordinator', '仅项目管理可邀请项目成员。', 403)
         data = payload()
         role = data.get('role')
         rules.check(role in rules.ROLES, '邀请角色无效。')
@@ -430,6 +440,18 @@ def create_app(data_dir=None, demo_access=False):
             connection.execute('UPDATE projects SET data=?,revision=revision+1 WHERE id=?', (json.dumps(project, ensure_ascii=False), invite['project_id']))
         return jsonify(project_view(invite['project_id']))
 
+    def optional_cents(value, label):
+        if value in (None, ''):
+            return None
+        from decimal import Decimal, InvalidOperation
+        try:
+            amount = Decimal(str(value))
+            if not amount.is_finite() or not 0 <= amount <= 10_000_000 or amount * 100 != int(amount * 100):
+                raise ValueError()
+            return int(amount * 100)
+        except (InvalidOperation, ValueError):
+            raise rules.Problem(label + '须为非负金额，最多两位小数。')
+
     @app.post('/api/projects/<project_id>/changes')
     def create_change(project_id):
         project_row(project_id)
@@ -455,7 +477,17 @@ def create_app(data_dir=None, demo_access=False):
                     'trigger': 'materials' if role == 'contractor' else 'request',
                     'owner_id': owner_id,
                     'proposal': text,
+                    'requirements': {
+                        'spec': rules.required(data.get('spec'), '期望规格', 80) if role == 'owner' and data.get('spec') else '',
+                        'budget': optional_cents(data.get('budget'), '追加预算') if role == 'owner' else None,
+                    },
                 }
+                related = data.get('related_change_id')
+                if related:
+                    rules.check(role == 'contractor' and any(
+                        item['id'] == related and item.get('collaboration') and item is not change
+                        for item in project['changes']), '请选择本项目的关联变更单。')
+                    change['collaboration']['related_change_id'] = related
                 rules.current(change)['approvers']['owner'] = owner_id
             change_id = change['id']
         return jsonify(project=project_view(project_id), change_id=change_id), 201
@@ -485,18 +517,68 @@ def create_app(data_dir=None, demo_access=False):
                 }, files(project_id))
         return jsonify(project=project_view(project_id), change_id=change['id'])
 
+    def evidence_text(name, content):
+        import re
+        from zipfile import ZipFile, BadZipFile
+        from xml.etree import ElementTree
+        suffix = Path(name).suffix.lower()
+        try:
+            if suffix == '.txt':
+                try:
+                    text = content.decode('utf-8-sig')
+                except UnicodeDecodeError:
+                    text = content.decode('gb18030')
+            elif suffix == '.docx':
+                with ZipFile(BytesIO(content)) as archive:
+                    info = archive.getinfo('word/document.xml')
+                    if info.file_size > 2_000_000:
+                        return ''
+                    xml = ElementTree.fromstring(archive.read(info))
+                    text = ' '.join(node.text or '' for node in xml.iter(
+                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'))
+            elif suffix == '.pdf':
+                from pypdf import PdfReader
+                reader = PdfReader(BytesIO(content))
+                text = '\n'.join((reader.pages[i].extract_text() or '')[:4000] for i in range(min(12,len(reader.pages))))
+            else:
+                return ''
+        except (BadZipFile, ElementTree.ParseError, KeyError, UnicodeError, ValueError, ImportError, OSError):
+            return ''
+        text = text.strip()
+        if len(re.sub(r'\W','',text)) < 12 or re.fullmatch(r'(?:test|测试|sample|示例|[\W_])+', text, re.I):
+            return ''
+        return text[:6000]
+
     @app.post('/api/projects/<project_id>/changes/<change_id>/translate')
     def translate_change(project_id, change_id):
         project = json.loads(project_row(project_id)['data'])
         change = next((c for c in project['changes'] if c['id'] == change_id), None)
         rules.check(change is not None, '变更不存在。', 404)
-        event_id = payload().get('event_id')
+        data = payload()
+        event_id = data.get('event_id')
+        if data.get('file_id'):
+            rules.check(g.user['role'] in ('owner','designer','contractor'), '当前身份无法解读凭据。', 403)
+            file = db().execute('SELECT name,content FROM files WHERE id=? AND project_id=? AND change_id=? AND kind=?',
+                                (data['file_id'], project_id, change_id, 'quote')).fetchone()
+            rules.check(file is not None, '请选择本单的原始凭据。', 404)
+            if Path(file['name']).suffix.lower() in ('.jpg', '.jpeg', '.png'):
+                sample = ROOT / 'static' / 'demo-photos' / 'warm-white-dispatch.jpg'
+                if project.get('synthetic') and sample.is_file() and file['content'] == sample.read_bytes():
+                    return jsonify(status='ok', mode='demo',
+                                   translation='演示发货单 FH-1116-01 记录：11 月 16 日发出 12 箱暖白墙砖，预计 11 月 17 日到。',
+                                   impact='这是发货记录。是否已经收到、能否按时开工，还要等施工方核对。',
+                                   next_step='施工方签收后核对数量和规格，再更新开工安排。')
+                return jsonify(read_evidence_photo(file['content']))
+            text = evidence_text(file['name'], file['content'])
+            return jsonify(translate_project_text(text, False, evidence=True) if text else {'status':'no_text'})
         if g.user['role'] == 'owner':
             participants = {m['id'] for m in members(project_id)
                             if m['role'] in ('designer', 'contractor', 'coordinator')}
             event = next((e for e in project['events'] if e['id'] == event_id
                           and e['change_id'] == change_id and e['actor_id'] in participants), None)
             rules.check(event is not None, '请选择本次变更的专业方记录。', 404)
+            rules.check(event['action'] not in ('上传资料','上传照片并初审') and '施工方代录' not in event['action'],
+                        '请打开具体凭据或查看代录卡片。', 400)
             return jsonify(translate_project_text(event['detail'], False))
         rules.check(g.user['role'] in ('designer', 'contractor', 'coordinator') and not event_id,
                     '请查看本次变更的住户原话。', 403)
@@ -511,8 +593,65 @@ def create_app(data_dir=None, demo_access=False):
             rules.check(g.user['role'] != 'mediator' or command == 'dispute', '外部复核账号仅能提交争议意见。', 403)
             collaboration = change.get('collaboration')
             if collaboration:
-                rules.check(command in ('comment', 'feasibility'), '请使用当前变更单的协商操作。', 409)
-                if command == 'feasibility':
+                rules.check(command in ('comment', 'feasibility', 'photo-review', 'supply'), '请使用当前变更单的协商操作。', 409)
+                if command == 'supply':
+                    approvers = rules.current(change)['approvers']
+                    rules.check(g.user['role'] == 'contractor' and approvers['construction'] in (None, g.user['id']),
+                                '仅本单施工方可代录。', 403)
+                    rules.check(collaboration['status'] != 'active', '生效方案请另发变更。', 409)
+                    rules.check(data.get('version') == collaboration['version'], '版本已更新，请刷新。', 409)
+                    supply = {key: rules.required(data.get(key), label, 160) for key, label in (
+                        ('spec','可供规格'), ('quantity','可供数量'), ('received','实收情况'),
+                        ('method','原铺法核对'), ('handover','交付影响'), ('source','凭据来源'))}
+                    supply['arrival_status'] = data.get('arrival_status')
+                    rules.check(supply['arrival_status'] in ('已到齐','部分到货','未到货'), '请选择到货状态。')
+                    for key in ('arrival', 'start', 'received_date'):
+                        value = data.get(key) or None
+                        if value:
+                            try:
+                                value = date.fromisoformat(value).isoformat()
+                            except (TypeError, ValueError):
+                                raise rules.Problem('请填写有效日期。')
+                        supply[key] = value
+                    rules.check(supply['arrival_status']=='未到货' or supply['received_date'],
+                                '已收货时请填写实际收货日期。')
+                    if supply['arrival_status']=='已到齐':
+                        supply['arrival'] = supply['received_date']
+                    rules.check(not (supply['arrival'] and supply['start'] and supply['start']<supply['arrival']),
+                                '本批材料对应工序的开工日须在材料到齐日或之后。')
+                    for key, label in (('old_quote','原报价'), ('new_quote','新报价'), ('extra','其他已核实费用')):
+                        supply[key] = optional_cents(data.get(key), label)
+                    supply['pending'] = rules.required(data['pending'], '未核实费用', 160) if data.get('pending') else ''
+                    supply['evidence'] = rules.required(data.get('evidence'), '原始凭据', 100)
+                    rules.check(any(f['id']==supply['evidence'] and f['change_id']==change_id for f in files(project_id)),
+                                '请先上传本单的原始凭据。')
+                    supply['by'] = g.user['name']
+                    approvers['construction'] = g.user['id']
+                    collaboration.update(supply=supply, status='review', decisions={},
+                                         version=collaboration['version']+1)
+                    change['baseline'] = dict(project['plan'])
+                    rules.event(project, g.user, f"变更 v{collaboration['version']} · 施工方代录",
+                                json.dumps(supply, ensure_ascii=False), change_id)
+                elif command == 'photo-review':
+                    rules.check(g.user['role'] == 'coordinator',
+                                '仅本项目的项目管理可进行凭据终审。', 403)
+                    file_id = rules.required(data.get('file_id'), '照片编号', 100)
+                    photo = db().execute(
+                        'SELECT r.report FROM photo_reviews r JOIN files f ON f.id=r.file_id '
+                        'WHERE f.id=? AND f.project_id=? AND f.change_id=? AND f.version=?',
+                        (file_id, project_id, change_id, collaboration['version'])).fetchone()
+                    rules.check(photo is not None, '请选择本版已初审的照片。', 404)
+                    decision = data.get('decision')
+                    rules.check(decision in ('approve', 'return'), '请选择复核结论。')
+                    report = json.loads(photo['report'])
+                    note = rules.required(data.get('note'), '照片复核说明', 500)
+                    report['human'] = {'decision': decision, 'note': note, 'by': g.user['name'],
+                                       'role': 'coordinator', 'at': rules.now()}
+                    db().execute('UPDATE photo_reviews SET report=? WHERE file_id=?',
+                                 (json.dumps(report, ensure_ascii=False), file_id))
+                    rules.event(project, g.user, '凭据终审通过' if decision == 'approve' else '凭据终审需补拍',
+                                note, change_id)
+                elif command == 'feasibility':
                     role = g.user['role']
                     status = collaboration['status']
                     decisions = collaboration['decisions']
@@ -524,12 +663,12 @@ def create_app(data_dir=None, demo_access=False):
                     if review_role and not approvers[review_role] and status in ('review', 'returned'):
                         approvers[review_role] = g.user['id']
                     if decision == 'revise':
-                        rules.check((status in ('returned', 'review') or (status == 'owner'
-                                    and change['baseline']['version'] != project['plan']['version'])) and review_role
+                        rules.check((status in ('returned', 'review') or status == 'owner') and review_role
                                     and rules.current(change)['approvers'][review_role] == g.user['id'],
                                     '仅指定设计师或施工方可重新提交。', 403)
                         collaboration.update(status='review', version=collaboration['version']+1,
                                              decisions={}, proposal=note)
+                        collaboration.pop('supply', None)
                         change['baseline'] = dict(project['plan'])
                     elif status == 'owner':
                         rules.check(g.user['id'] == collaboration.get('owner_id', change['source']['author_id']),
@@ -538,7 +677,14 @@ def create_app(data_dir=None, demo_access=False):
                         if decision == 'approve':
                             rules.check(change['baseline']['version'] == project['plan']['version'],
                                         '执行方案已更新，请基于新版修订后重新确认。', 409)
-                            decisions['owner'] = {'note': note, 'decision': decision}
+                            supply = collaboration.get('supply')
+                            if supply:
+                                rules.check(supply['old_quote'] is not None and supply['new_quote'] is not None,
+                                            '请退回补齐原报价和新报价。', 409)
+                                if supply['pending']:
+                                    rules.check(data.get('known_only') is True, '请明确仅同意已核实金额，或退回补充。')
+                            decisions['owner'] = {'note': note, 'decision': decision,
+                                                  'known_only': data.get('known_only') is True}
                         collaboration['status'] = 'active' if decision == 'approve' else 'returned'
                     else:
                         rules.check(status == 'review' and review_role
@@ -546,6 +692,8 @@ def create_app(data_dir=None, demo_access=False):
                                     '当前身份或阶段无法确认。', 403)
                         rules.check(role not in decisions, '本版本已确认。', 409)
                         rules.check(decision in ('approve', 'return'), '请选择确认或退回。')
+                        if role == 'contractor' and decision == 'approve' and 'requirements' in collaboration:
+                            rules.check(collaboration.get('supply'), '请先代录供货、现场和报价信息。', 409)
                         decisions[role] = {'note': note, 'decision': decision}
                         if decision == 'return':
                             collaboration['status'] = 'returned'
@@ -556,6 +704,10 @@ def create_app(data_dir=None, demo_access=False):
                     if collaboration['status'] == 'active':
                         collaboration['activated_at'] = rules.now()
                         plan = project['plan']
+                        if collaboration.get('supply'):
+                            plan['confirmed_supply'] = dict(collaboration['supply'])
+                        else:
+                            plan.pop('confirmed_supply', None)
                         plan.update(version=plan['version']+1,
                                     text=plan['text'] + '\n本次已确认调整：' + collaboration.get('proposal', change['source']['text']),
                                     change_id=change_id, change_version=collaboration['version'])
@@ -658,13 +810,28 @@ def create_app(data_dir=None, demo_access=False):
             expected = int(request.form.get('revision', ''))
         except ValueError:
             raise rules.Problem('请刷新页面后再上传。')
+        row = project_row(project_id)
+        snapshot = json.loads(row['data'])
+        candidate = next((c for c in snapshot['changes'] if c['id'] == change_id), None)
+        review = None
+        received = datetime.now(rules.TZ)
+        if candidate and candidate.get('collaboration') and kind == 'site':
+            rules.check(expected == row['revision'], '项目已由其他成员更新，请刷新后重试。', 409)
+            rules.check(Path(name).suffix.lower() in ('.jpg', '.jpeg', '.png'), '请选择 JPG 或 PNG 照片。')
+            key = request.form.get('standard')
+            standard = next((item for item in rules.work_template(candidate)['evidence'] if item['key'] == key), None)
+            if key == 'SHIP':
+                standard = {'key': 'SHIP'}
+            rules.check(standard is not None, '请选择照片对应的拍摄标准。')
+            review = inspect_photo(content, received, standard, rules.current(candidate)['data'])
+            reference = key + ' | ' + reference
         with edit_project(project_id, expected) as project:
             change = next((c for c in project['changes'] if c['id'] == change_id), None)
             rules.check(change is not None, '变更不存在。', 404)
             if change.get('collaboration'):
-                rules.check(kind == 'site', '请在此变更单上传现场照片。', 409)
-                rules.check(Path(name).suffix.lower() in ('.jpg', '.jpeg', '.png')
-                            and (content.startswith(b'\x89PNG\r\n\x1a\n') or content.startswith(b'\xff\xd8\xff')),
+                rules.check(kind in ('site', 'quote') and g.user['role']=='contractor', '仅施工方可上传凭据。', 403)
+                rules.check(kind == 'quote' or (Path(name).suffix.lower() in ('.jpg', '.jpeg', '.png')
+                            and (content.startswith(b'\x89PNG\r\n\x1a\n') or content.startswith(b'\xff\xd8\xff'))),
                             '请选择 JPG 或 PNG 照片。')
             elif kind in ('drawing', 'quote'):
                 rules.check(change['status'] == 'clarifying', '请在澄清阶段补充审批资料。', 409)
@@ -672,10 +839,15 @@ def create_app(data_dir=None, demo_access=False):
             else:
                 rules.check(change['status'] == 'executing', '请在施工任务发布后回传现场记录。', 409)
                 rules.validate_site_reference(reference, rules.work_template(change)['evidence'])
+            file_id = rules.ident()
+            version = change['collaboration']['version'] if review else rules.current(change)['number']
             db().execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                         (rules.ident(), project_id, change_id, rules.current(change)['number'], kind, reference, name,
-                          len(content), content, g.user['id'], rules.now()))
-            rules.event(project, g.user, '上传资料', name + ' · ' + reference, change_id)
+                         (file_id, project_id, change_id, version, kind, reference, name,
+                          len(content), content, g.user['id'], received.isoformat() if review else rules.now()))
+            if review:
+                db().execute('INSERT INTO photo_reviews VALUES(?,?,?)',
+                             (file_id, '', json.dumps(review, ensure_ascii=False)))
+            rules.event(project, g.user, '上传照片并初审' if review else '上传资料', name + ' · ' + reference, change_id)
         return jsonify(project_view(project_id))
 
     @app.post('/api/projects/<project_id>/changes/<change_id>/tasks/<task_id>/photos')
@@ -773,7 +945,7 @@ def create_app(data_dir=None, demo_access=False):
 if __name__ == '__main__':
     from waitress import serve
     port = int(os.getenv('TASKFLOW_PORT', '8765'))
-    print(f'工序共识已启动：http://localhost:{port}', flush=True)
+    print(f'共序·港乡已启动：http://localhost:{port}', flush=True)
     host = os.getenv('TASKFLOW_HOST', '0.0.0.0')
     demo_access = os.getenv('TASKFLOW_DEMO_ACCESS') == '1' and host == '127.0.0.1'
     proxy = {}

@@ -6,7 +6,7 @@ import re
 import uuid
 
 TZ = timezone(timedelta(hours=8))
-ROLES = {'owner': '住户', 'coordinator': '中介方 / 产品总监',
+ROLES = {'owner': '住户', 'coordinator': '项目管理',
          'designer': '设计师', 'contractor': '施工团队', 'mediator': '外部复核人'}
 FIELD_ROLES = {
     'tile_spec': 'designer', 'layout': 'designer', 'start_point': 'designer',
@@ -138,7 +138,7 @@ def revise(project, change, actor, payload, members):
         revision['data'][key] = value
     validate_data(revision['data'])
     if 'tasks' in payload or 'approvers' in payload:
-        check(actor['role'] == 'coordinator', '仅中介方可组织任务分派。', 403)
+        check(actor['role'] == 'coordinator', '仅项目管理可组织任务分派。', 403)
         if 'approvers' in payload:
             approvers = payload['approvers']
             check(isinstance(approvers, dict) and set(approvers) == set(APPROVAL_ROLES), '确认事项不完整。')
@@ -259,7 +259,7 @@ def approve(project, change, actor, payload, files):
 
 
 def publish(project, change, actor, files):
-    check(actor['role'] == 'coordinator', '仅中介方可发布正式任务。', 403)
+    check(actor['role'] == 'coordinator', '仅项目管理可发布正式任务。', 403)
     check(not change.get('refund'), '此演示单仅记录返费方案确认。', 409)
     check(change['status'] == 'clarifying', '当前变更已经发布或等待修订。', 409)
     check(change['baseline']['version'] == project['plan']['version'], '正式计划已更新，请创建修订并重新确认。', 409)
@@ -536,7 +536,7 @@ def recommend_plan(change):
             reasons.append('两种方案的预计交付日相同或并行方案无优势，优先采用依据更直接的「直接顺延」。')
     if data.get('valid_until') and datetime.fromisoformat(data['valid_until']) <= datetime.now(TZ):
         cautions.append('报价已过期，推荐仅基于当前填写的日期；重新询价后应重新评估。')
-    cautions.append('推荐不自动执行：最终方案由中介方在「责任分派」中选择，并经设计、施工、住户三方确认后才能发布。')
+    cautions.append('推荐不自动执行：最终方案由项目管理在「责任分派」中选择，并经设计、施工、住户三方确认后才能发布。')
     return {'recommended': recommended,
             'title': '先做可并行工作' if recommended == 'parallel' else '直接顺延',
             'reasons': reasons, 'cautions': cautions,

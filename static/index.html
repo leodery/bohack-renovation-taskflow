@@ -3,13 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#153e36">
-  <title>工序共识 · 四方家装协作</title>
-  <link rel="stylesheet" href="/static/app.css?v=kitchen-entry-1">
-  <script src="/static/app.js?v=collaboration-5" defer></script>
+  <meta name="theme-color" content="#f2f7fd">
+  <title>共序·港乡 · 四方家装协作</title>
+  <link rel="stylesheet" href="/static/app.css?v=demo-photos-1">
+  <link rel="stylesheet" href="/static/opening.css?v=20261115">
+  <script src="/static/app.js?v=evidence-samples-1" defer></script>
+  <script type="module" src="/static/opening-motion.js?v=20261115"></script>
 </head>
 <body>
-  <div id="app"><div class="loading">正在连接工序共识…</div></div>
+  <div id="app"><div class="loading">正在连接共序·港乡…</div></div>
+  <dialog id="collaboration-story" aria-labelledby="story-title" aria-describedby="story-description">
+    <div class="story-dialog-head">
+      <h2 id="story-title">共同确认，一步一步交付</h2>
+      <button type="button" class="secondary" data-close-story>关闭演示</button>
+    </div>
+    <p id="story-description">住户提出变更，设计师和施工方核对可行性，住户确认后，按新版方案施工。</p>
+    <div id="story-scene"></div>
+  </dialog>
   <div id="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

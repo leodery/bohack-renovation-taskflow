@@ -6,10 +6,45 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from analysis_service import analyze, analyze_site_note
+from analysis_service import analyze, analyze_site_note, translate_project_text
 
 
 class AnalysisTest(unittest.TestCase):
+    def test_material_explanation_preserves_shortfall_and_pending_checks(self):
+        source = ('原选浅色墙砖库存只有 12 箱，仍缺 8 箱。建议厨房统一改用同规格米白墙砖，'
+                  '避免两种砖混铺。施工方核对到货日期和差价，设计师核对样品及收边。')
+        with patch('analysis_service.urllib.request.urlopen') as model:
+            result = translate_project_text(source, False)
+        model.assert_not_called()
+        self.assertEqual(result['mode'], 'rules')
+        self.assertIn('还差 8 箱', result['translation'])
+        self.assertIn('建议统一换成米白砖', result['translation'])
+        self.assertIn('施工方核对差价和到货日', result['next_step'])
+
+    def test_quote_explains_listed_difference_without_model(self):
+        source = ('演示报价｜厨房暖白墙砖 300×600 mm，12 箱×110 元＝1320 元。'
+                  '原木色12箱共1200元，换货配送费80元。错发8箱紫砖退回，不计入新报价，待工费未报价。')
+        with patch('analysis_service.urllib.request.urlopen') as model:
+            result = translate_project_text(source, False, evidence=True)
+        model.assert_not_called()
+        self.assertEqual(result['status'], 'ok')
+        self.assertIn('多付 200 元', result['impact'])
+        self.assertIn('没算进去', result['impact'])
+
+    def test_document_translation_still_uses_model_for_material_text(self):
+        source = '墙砖库存只有 12 箱，仍缺 8 箱。'
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({'choices': [{'message': {'content': json.dumps({
+            'translation': '这份单据显示目前只有12箱，订货数量还差8箱。'
+        })}}]}).encode()
+        with patch.dict(os.environ, {'TASKFLOW_MODEL_KEY': '', 'TASKFLOW_NOTE_URL': 'https://example.invalid',
+                                     'TASKFLOW_NOTE_MODEL': 'test'}), patch(
+                'analysis_service.urllib.request.urlopen', return_value=response) as model:
+            result = translate_project_text(source, False, evidence=True)
+        model.assert_called_once()
+        self.assertEqual(result['status'], 'ok')
+
     def test_site_note_rejects_model_placeholder_and_preserves_action(self):
         text = '砖周五才到，瓦工只约了周四。'
         response = MagicMock()

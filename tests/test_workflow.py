@@ -51,6 +51,31 @@ class WorkflowTest(unittest.TestCase):
     def action(self, role, command, data=None, expected=200):
         return self.post(role, f'/api/projects/{self.pid}/changes/{self.cid}/{command}', {'revision': self.project()['revision'], **(data or {})}, expected)
 
+    def test_project_manager_records_final_photo_review(self):
+        created = self.post('owner', f'/api/projects/{self.pid}/changes', {
+            'text': 'Update kitchen tile color', 'simple': True,
+            'revision': self.project()['revision']}, 201)
+        self.cid = created['change_id']
+        report = {'mode': 'model', 'standard': 'SHIP', 'dispatch': {'quantity': '12 cartons'}}
+        with patch('server.inspect_photo', return_value=report):
+            response = self.clients['contractor'].post(
+                f'/api/projects/{self.pid}/changes/{self.cid}/files',
+                data={'kind': 'site', 'reference': 'Dispatch slip', 'standard': 'SHIP',
+                      'revision': str(self.project()['revision']),
+                      'file': (io.BytesIO(b'\xff\xd8\xffdemo'), 'dispatch.jpg')},
+                headers=self.headers['contractor'])
+        self.assertEqual(response.status_code, 200, response.get_json())
+        file_id = next(f['id'] for f in response.get_json()['files'] if f['change_id'] == self.cid)
+        review = {'file_id': file_id, 'decision': 'approve', 'note': 'Dispatch matches source; receipt is pending.'}
+        self.action('designer', 'photo-review', review, 403)
+        self.action('contractor', 'photo-review', review, 403)
+        self.action('coordinator', 'photo-review', review)
+        owner_files = self.project('owner')['files']
+        result = next(f['photo_review'] for f in owner_files if f['id'] == file_id)
+        self.assertEqual(result['human']['role'], 'coordinator')
+        self.assertEqual(result['human']['note'], review['note'])
+        self.assertEqual(result['dispatch']['quantity'], '12 cartons')
+
     def test_site_issue_resolution(self):
         self.action('owner', 'site-issue', {'note': 'Unauthorized report'}, 403)
         result = self.action('contractor', 'site-issue', {'note': 'Materials delayed'})

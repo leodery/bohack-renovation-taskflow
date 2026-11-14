@@ -82,7 +82,7 @@ def tile_photo(base, accent):
     return make_png(240, 160, pixel)
 
 
-def populate(actor, participants, add_file, kitchen=False):
+def populate(actor, participants, add_file, kitchen=False, simple=False):
     today = datetime.now(rules.TZ)
     arrival = today.date() + timedelta(days=2)
     original_finish = arrival + timedelta(days=2)
@@ -93,6 +93,8 @@ def populate(actor, participants, add_file, kitchen=False):
     people = {p['role']: p for p in participants}
     owner, designer, contractor = (people[role] for role in ('owner', 'designer', 'contractor'))
     rules.event(project, actor, '创建演示案例', TITLE)
+    if simple:
+        return project
     change = rules.new_change(
         project, owner, '客厅和卧室的砖能不能连着铺？我想改成全屋通铺，换 800×800 的砖，门口别用原来的扣条。会多花多少钱？原来约好的交付日还能赶上吗？',
         [actor, *participants],
@@ -150,7 +152,7 @@ def populate(actor, participants, add_file, kitchen=False):
            'E05_合成文字记录.txt', '演示：等待补交完工照片。'.encode())
     rules.handle_task(project, change, contractor,
                       {'task_id': 'materials', 'command': 'submit',
-                       'note': '已上传合成材料到场示意，等待中介方人工核对。', 'file_ids': photo_ids[:1]},
+                       'note': '已上传合成材料到场示意，等待项目管理人工核对。', 'file_ids': photo_ids[:1]},
                       attachments)
     report = rules.evidence_assessment(attachments, change)
     report.update(mode='rules', label='演示用规则核对 · 未调用模型', missing=[], findings=[],
