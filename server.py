@@ -278,7 +278,7 @@ def create_app(data_dir=None, demo_access=False):
         return response
 
     def members(project_id):
-        return [dict(row) for row in db().execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY u.name', (project_id,))]
+        return [dict(row) for row in db().execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.name', (project_id,))]
 
     def project_row(project_id):
         row = db().execute('SELECT p.* FROM projects p JOIN members m ON m.project_id=p.id WHERE p.id=? AND m.user_id=?', (project_id, g.user['id'],)).fetchone()
@@ -288,7 +288,7 @@ def create_app(data_dir=None, demo_access=False):
     def files(project_id):
         rows = db().execute('''SELECT f.id,f.project_id,f.change_id,f.version,f.kind,f.reference,f.name,f.size,f.at,
                                u.name AS uploaded_by,r.task_id,r.report
-                               FROM files f JOIN u u ON u.id=f.uploaded_by
+                               FROM files f JOIN users u ON u.id=f.uploaded_by
                                LEFT JOIN photo_reviews r ON r.file_id=f.id
                                WHERE f.project_id=? ORDER BY f.at,f.id''', (project_id,))
         attachments = []
@@ -471,7 +471,7 @@ def create_app(data_dir=None, demo_access=False):
             change = next((c for c in project['changes'] if c.get('refund')), None)
             if not change:
                 def add_file(change, actor, kind, reference, name, description):
-                    fid, at, version = rules.ident(), rules.now(), rules.current(change)['number']
+                    fid, at, version = rules.ident(), rules.now()
                     encoded = description.encode()
                     db().execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                                  (fid, project_id, change['id'], version, kind, reference, name,
@@ -492,7 +492,7 @@ def create_app(data_dir=None, demo_access=False):
         rules.check(change is not None, '变更不存在。', 404)
         event_id = payload().get('event_id')
         if g.user['role'] == 'owner':
-            participants = {m['id'] for m in members(project)
+            participants = {m['id'] for m in members(project_id)
                             if m['role'] in ('designer', 'contractor', 'coordinator')}
             event = next((e for e in project['events'] if e['id'] == event_id
                           and e['change_id'] == change_id and e['actor_id'] in participants), None)
@@ -616,7 +616,8 @@ def create_app(data_dir=None, demo_access=False):
         rules.check(command in ('save', 'propose', 'decide', 'publish', 'rehearse'), '操作不存在。', 404)
         with edit_project(project_id, data.get('revision')) as project:
             change = next((c for c in project['changes'] if c['id'] == change_id), None)
-            rules.check(change, '变更不存在。', 404)
+            rules.check(change, '请刷新页面。') if False else None
+            rules.check(change is not None, '变更不存在。', 404)
             kitchen = change.get('kitchen_change')
             if kitchen and command in ('propose','publish'):
                 available = {(f['kind'], f['reference']) for f in files(project_id) if f['change_id']==change_id}
