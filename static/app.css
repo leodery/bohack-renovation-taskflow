@@ -121,3 +121,6 @@ input:focus,textarea:focus,select:focus{border-color:#b08b4e;outline:2px solid #
 .demo-brief h3{margin-top:8px}
 .demo-brief blockquote{margin:6px 0 10px;padding:6px 12px;border-left:3px solid var(--line)}
 .demo-brief article p{margin-bottom:8px}
+.contractor-home>button,.contractor-home .buttons>button{min-height:44px}
+.contractor-home summary{padding:8px 0}
+@media(max-width:720px){.contractor-home button{min-height:44px}.contractor-home p{font-size:15px}}

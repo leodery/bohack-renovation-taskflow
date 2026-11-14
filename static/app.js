@@ -110,9 +110,46 @@ function roleChangeTodos(){
   return rows.length?`<section class="card"><h2>我的变更待办</h2><ul>${rows.join('')}</ul></section>`:'';
 }
 function overview(){
+  if(['owner','designer','contractor','coordinator'].includes(state.user.role))return roleHome();
   const p=state.project, tasks=p.data.changes.flatMap(c=>c.tasks);
   const my=tasks.filter(t=>t.owner_id===state.user.id && t.status!=='approved');
   return `<div class="page-head"><div class="row between"><h1>${esc(p.title)}</h1>${p.data.synthetic?tag('演示用合成数据','warn'):tag('四方共享项目')}</div><p class="muted">先确认共同依据，再把下一步交给具体的人。</p></div>${roleChangeTodos()}<div class="stats"><div class="stat"><small>参与成员</small><strong>${p.members.length}</strong></div><div class="stat"><small>待协商变更</small><strong>${p.data.changes.filter(c=>['clarifying','returned'].includes(c.status)).length}</strong></div><div class="stat"><small>我的执行待办</small><strong>${my.length}</strong></div></div><div class="grid"><section class="card"><h2>正式施工方案</h2><dl><dt>当前版本</dt><dd>v${p.data.plan.version} · ${esc(p.data.plan.reference)}</dd><dt>方案说明</dt><dd>${esc(p.data.plan.text)}</dd><dt>交付日期</dt><dd>${esc(p.data.plan.finish_date||'待确认')}</dd></dl><details class="revision"><summary>查看原方案</summary><p>${esc(p.data.original_plan.text)}</p><small>${esc(p.data.original_plan.reference)}</small></details><div class="buttons"><button data-tab="changes">进入变更协商</button><button data-tab="members" class="secondary">邀请项目成员</button></div></section><section class="card"><h2>最近发生的事</h2>${eventsView(p.data.events.slice(-4))}</section></div>`;
+}
+function roleHome(){
+  const p=state.project, role=state.user.role;
+  const current=p.data.changes.find(c=>c.id===p.data.plan.change_id)||p.data.changes.at(-1);
+  const latest=p.data.changes.at(-1);
+  const topic=role==='owner'?(latest||current):current;
+  const context=topic?.kitchen_change;
+  const proposal=topic?.schedule_proposals?.at(-1);
+  const selected=proposal?.status==='pending'?proposal:null;
+  const waiting=selected?Object.entries(selected.approvers).filter(([k])=>!selected.decisions[k]).map(([,id])=>name(id)):[];
+  const awaiting=waiting.length?'等待 '+waiting.join('、')+' 确认':selected?'各方已确认，等待项目经理发布':'暂无待确认排程';
+  const go=(tab,label)=>topic?`<button data-role-open="${tab}" data-change-id="${topic.id}">${label}</button>`:'';
+  const docs=topic?p.files.filter(f=>f.change_id===topic.id&&f.kind==='drawing'):[];
+  const drawing=docs.find(f=>f.reference===(context?.drawing||p.data.plan.reference));
+  const docLink=drawing?`<a href="/api/files/${drawing.id}">${esc(drawing.name)}</a>`:'暂无匹配图纸附件';
+  const report=topic&&role==='contractor'?`<details class="revision"><summary>上报施工问题</summary><form id="homeIssue" class="stack" data-change-id="${topic.id}"><label>现场情况<textarea name="note" placeholder="例如：材料到场与班组安排不一致" maxlength="500" required></textarea></label><button>提交问题</button></form></details>`:'';
+  const issues=p.data.events.filter(e=>e.action==='协商留言'&&e.detail.startsWith('施工问题：'));
+  const conflict=topic?.schedule_draft?.issues||[];
+  const title={owner:'我的装修进度',coordinator:'项目协调台',designer:'设计工作台',contractor:'施工工作台'}[role];
+  let content='';
+  if(role==='owner'){
+    const cost=topic?.refund?`预计返费 ${topic.refund.refund} 元`:context?`墙砖材料多 ${context.new_quote-context.old_quote} 元，瓦工待工费待核实`:'费用以确认版报价为准';
+    content=`<section class="card"><h2>交付与费用</h2><p>当前约定交付 ${esc(p.data.plan.finish_date||'待确认')}</p>${selected?`<p>拟调整至 ${esc(selected.result.metrics.finish)}，正在确认</p>`:''}<p>${esc(cost)}</p><p>${esc(awaiting)}</p><div class="buttons">${go(context?'schedule':'changes','查看金额和依据')}</div></section>`;
+  }else if(role==='coordinator'){
+    content=`<section class="card"><h2>异常与协调</h2><p>${esc(awaiting)}</p>${conflict.length?`<ul>${conflict.map(i=>`<li>${esc(i.message)}</li>`).join('')}</ul>`:'<p>当前无已保存的排程冲突。</p>'}${issues.length?eventsView(issues.slice(-4)):'<p>暂无施工问题上报。</p>'}<div class="buttons">${go('schedule','检查排程与影响')}${go('changes','查看责任分派')}</div></section>`;
+  }else if(role==='designer'){
+    content=`<section class="card"><h2>施工图纸和设计变更</h2><p>现行图纸 ${esc(p.data.plan.reference)}${context&&!context.applied?' · 待核对新版 '+esc(context.drawing):''}</p><p>${docLink}</p><p>${esc(context?.request||topic?.source.text||'暂无变更')}</p><p>${esc(awaiting)}</p><div class="buttons">${go('changes','查看变更差异和版本')}</div></section>`;
+  }else{
+    const tasks=topic?.tasks.filter(t=>t.owner_id===state.user.id&&t.status!=='approved')||[];
+    const available=tasks.filter(t=>!topic.schedule_task_locks?.includes(t.id)&&['ready','returned'].includes(t.status)&&t.depends_on.every(id=>topic.tasks.find(x=>x.id===id)?.status==='approved'));
+    const next=available.find(t=>topic.schedule?.nodes.find(n=>n.id===t.id)?.start===new Date().toLocaleDateString('sv-SE'))||available[0]||tasks[0];
+    const blocked=next&&topic.schedule_task_locks?.includes(next.id);
+    const deps=next?.depends_on.map(id=>topic.tasks.find(t=>t.id===id)).filter(t=>t&&t.status!=='approved')||[];
+    content=`<section class="card contractor-home"><h2>下一项施工任务</h2><h3>${esc(next?.title||'暂无我的施工任务')}</h3><p>${esc(blocked?'等待变更确认并发布':deps.length?'等待 '+deps.map(t=>t.title+'（'+name(t.owner_id)+'）').join('、'):next?.status==='submitted'?'等待 '+next.reviewer_ids.map(name).join('、')+' 核对':next?'前置条件已满足，请按排程执行':'')}</p><p>施工依据 ${esc(p.data.plan.reference)}${next?' · 截止 '+esc(next.due):''}</p>${next&&available.includes(next)?`<button data-role-open="tasks" data-change-id="${topic.id}" data-task-focus="${next.id}">拍照提交进度</button>`:''}${report}<p>${go('changes','查看施工要求')}</p></section>`;
+  }
+  return `<div class="page-head"><h1>${title}</h1><p class="muted">${esc(p.title)}${p.data.synthetic?' · 演示案例':''}</p></div><div class="stack">${roleChangeTodos()}${content}</div>`;
 }
 function changeToolbar(){
   const changes=state.project.data.changes;
@@ -444,6 +481,20 @@ async function mutate(command,data){
   setProject(await post(`/api/projects/${state.project.id}/changes/${state.changeId}/${command}`,{...data,revision:state.project.revision}));
 }
 function bind(){
+  document.querySelectorAll('[data-role-open]').forEach(button=>button.onclick=()=>{
+    state.changeId=button.dataset.changeId;
+    state.tab=button.dataset.roleOpen;
+    render();
+    if(button.dataset.taskFocus)document.getElementById('review-task-'+button.dataset.taskFocus)?.scrollIntoView();
+  });
+  bindForm('#homeIssue',async form=>{
+    const id=$('#homeIssue').dataset.changeId;
+    const note=String(form.get('note')).trim();
+    if(!note)throw new Error('请输入现场情况。');
+    const result=await post(`/api/projects/${state.project.id}/changes/${id}/comment`,{revision:state.project.revision,text:'施工问题：'+note});
+    setProject(result);
+    notify('施工问题已记入项目，项目经理可在首页查看。');
+  });
   document.querySelectorAll('[data-schedule-change]').forEach(button=>button.onclick=()=>{
     state.changeId=button.dataset.scheduleChange;state.tab='schedule';render();
   });
