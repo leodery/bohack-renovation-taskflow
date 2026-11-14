@@ -128,3 +128,5 @@ input:focus,textarea:focus,select:focus{border-color:#b08b4e;outline:2px solid #
 .demo-guide h2{margin:12px 0 6px}
 .demo-guide .buttons button{min-height:46px}
 .guide-details{margin-bottom:16px}
+
+.roadshow-tools > summary {font-size: .875rem;}

@@ -131,6 +131,9 @@ function roleHome(){
   const docLink=drawing?`<a href="/api/files/${drawing.id}">${esc(drawing.name)}</a>`:'暂无匹配图纸附件';
   const report=topic&&role==='contractor'?`<details class="revision"><summary>上报施工问题</summary><form id="homeIssue" class="stack" data-change-id="${topic.id}"><label>现场情况<textarea name="note" placeholder="例如：材料到场与班组安排不一致" maxlength="500" required></textarea></label><button>提交问题</button></form></details>`:'';
   const issues=p.data.events.filter(e=>e.action==='协商留言'&&e.detail.startsWith('施工问题：'));
+  const issueCards=issues.filter(e=>role==='coordinator'||e.actor_id===state.user.id)
+    .sort((a,b)=>Number(Boolean(a.resolution))-Number(Boolean(b.resolution))||b.at.localeCompare(a.at))
+    .map(e=>`<div class="approval"><strong>${e.resolution?'已处理':'待项目经理处理'}</strong><p>${esc(e.detail.slice('施工问题：'.length))}</p><small>${esc(e.actor_name)} · ${stamp(e.at)}</small>${e.resolution?`<p>处理结果：${esc(e.resolution.note)}</p><small>${esc(e.resolution.by)} · ${stamp(e.resolution.at)}</small>`:role==='coordinator'?`<form class="stack" data-site-issue="${esc(e.id)}" data-change-id="${esc(e.change_id)}"><label>处理结果<textarea name="note" maxlength="500" required></textarea></label><button>记录处理结果</button></form>`:''}</div>`).join('');
   const conflict=topic?.schedule_draft?.issues||[];
   const title={owner:'我的装修进度',coordinator:'项目协调台',designer:'设计工作台',contractor:'施工工作台'}[role];
   let content='';
@@ -138,7 +141,7 @@ function roleHome(){
     const cost=topic?.refund?`预计返费 ${topic.refund.refund} 元`:context?`墙砖材料多 ${context.new_quote-context.old_quote} 元，瓦工待工费待核实`:'费用以确认版报价为准';
     content=`<section class="card"><h2>交付与费用</h2><p>当前约定交付 ${esc(p.data.plan.finish_date||'待确认')}</p>${selected?`<p>拟调整至 ${esc(selected.result.metrics.finish)}，正在确认</p>`:''}<p>${esc(cost)}</p><p>${esc(awaiting)}</p><div class="buttons">${go(context?'schedule':'changes','查看金额和依据')}</div></section>`;
   }else if(role==='coordinator'){
-    content=`<section class="card"><h2>异常与协调</h2><p>${esc(awaiting)}</p>${conflict.length?`<ul>${conflict.map(i=>`<li>${esc(i.message)}</li>`).join('')}</ul>`:'<p>当前无已保存的排程冲突。</p>'}${issues.length?eventsView(issues.slice(-4)):'<p>暂无施工问题上报。</p>'}<div class="buttons">${go('schedule','检查排程与影响')}${go('changes','查看责任分派')}</div></section>`;
+    content=`<section class="card"><h2>异常与协调</h2><p>${esc(awaiting)}</p>${conflict.length?`<ul>${conflict.map(i=>`<li>${esc(i.message)}</li>`).join('')}</ul>`:'<p>当前无已保存的排程冲突。</p>'}${issueCards||'<p>暂无施工问题上报。</p>'}<div class="buttons">${go('schedule','检查排程与影响')}${go('changes','查看责任分派')}</div></section>`;
   }else if(role==='designer'){
     content=`<section class="card"><h2>施工图纸和设计变更</h2><p>现行图纸 ${esc(p.data.plan.reference)}${context&&!context.applied?' · 待核对新版 '+esc(context.drawing):''}</p><p>${docLink}</p><p>${esc(context?.request||topic?.source.text||'暂无变更')}</p><p>${esc(awaiting)}</p><div class="buttons">${go('changes','查看变更差异和版本')}</div></section>`;
   }else{
@@ -147,7 +150,7 @@ function roleHome(){
     const next=available.find(t=>topic.schedule?.nodes.find(n=>n.id===t.id)?.start===new Date().toLocaleDateString('sv-SE'))||available[0]||tasks[0];
     const blocked=next&&topic.schedule_task_locks?.includes(next.id);
     const deps=next?.depends_on.map(id=>topic.tasks.find(t=>t.id===id)).filter(t=>t&&t.status!=='approved')||[];
-    content=`<section class="card contractor-home"><h2>下一项施工任务</h2><h3>${esc(next?.title||'暂无我的施工任务')}</h3><p>${esc(blocked?'等待变更确认并发布':deps.length?'等待 '+deps.map(t=>t.title+'（'+name(t.owner_id)+'）').join('、'):next?.status==='submitted'?'等待 '+next.reviewer_ids.map(name).join('、')+' 核对':next?'前置条件已满足，请按排程执行':'')}</p><p>施工依据 ${esc(p.data.plan.reference)}${next?' · 截止 '+esc(next.due):''}</p>${next&&available.includes(next)?`<button data-role-open="tasks" data-change-id="${topic.id}" data-task-focus="${next.id}">拍照提交进度</button>`:''}${report}<p>${go('changes','查看施工要求')}</p></section>`;
+    content=`<section class="card contractor-home"><h2>下一项施工任务</h2><h3>${esc(next?.title||'暂无我的施工任务')}</h3><p>${esc(blocked?'等待变更确认并发布':deps.length?'等待 '+deps.map(t=>t.title+'（'+name(t.owner_id)+'）').join('、'):next?.status==='submitted'?'等待 '+next.reviewer_ids.map(name).join('、')+' 核对':next?'前置条件已满足，请按排程执行':'')}</p><p>施工依据 ${esc(p.data.plan.reference)}${next?' · 截止 '+esc(next.due):''}</p>${next&&available.includes(next)?`<button data-role-open="tasks" data-change-id="${topic.id}" data-task-focus="${next.id}">拍照提交进度</button>`:''}${report}<p>${go('changes','查看施工要求')}</p>${issueCards}</section>`;
   }
   return `<div class="page-head"><h1>${title}</h1><p class="muted">${esc(p.title)}${p.data.synthetic?' · 演示案例':''}</p></div><div class="stack">${roleChangeTodos()}${content}</div>`;
 }
@@ -319,7 +322,7 @@ function changesPage(){
   const r=revision(c),a=r.analysis;
   const progress=['clarifying','executing','acceptance','closed'];
   const facts=a.facts.map(f=>`<li>${esc(labels[f.field]||f.field)} · ${esc(f.value)}<br><small>原文依据「${esc(f.evidence)}」</small></li>`).join('');
-  return `<div class="page-head"><h1>变更协商</h1><p class="muted">查看当前方案、确认进度和变更记录。</p></div>${changeToolbar()}<div class="stack">${refundSummary(c)}<section class="card"><div class="row between"><h2>${esc(templateFor(c).name)} · v${r.number}</h2>${tag(statuses[c.status],c.status==='returned'?'red':'')}</div><p class="source">${esc(c.source.text)}</p><small>住户 ${esc(c.source.author_name)} · ${stamp(c.source.at)} · 原方案 ${esc((c.original_baseline||c.baseline).reference)}</small><div class="phase">${progress.map(key=>`<span class="${c.status===key || key==='clarifying'&&c.status==='returned'?'active':''}">${statuses[key]}</span>`).join('')}</div></section><div class="change-grid"><div class="stack"><section class="card"><h2>事实与待确认事项</h2>${tag(a.label,'neutral')}${facts?`<ul class="list">${facts}</ul>`:'<p class="muted">原话中的明确事实由各方继续核对。</p>'}<ul class="list">${a.questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ul><details class="revision"><summary>当前设计与施工依据</summary><dl>${Object.entries(fieldLabels(c)).map(([key,label])=>`<dt>${esc(label)}</dt><dd>${esc(r.data[key]??'待确认')}</dd>`).join('')}</dl></details></section>${c.refund?'':detailsForm(c)+assignmentForm(c)}${sourceForm()}${versionHistory(c)}</div><div class="stack">${nextSteps(c)}${disputePanel(c)}${approvalPanel(c)}${planPanel(c)}${filePanel(c)}</div></div></div>`;
+  return `<div class="page-head"><h1>变更协商</h1><p class="muted">查看当前方案、确认进度和变更记录。</p></div>${changeToolbar()}<div class="stack">${refundSummary(c)}<section class="card"><div class="row between"><h2>${esc(templateFor(c).name)} · v${r.number}</h2>${tag(statuses[c.status],c.status==='returned'?'red':'')}</div><p class="source">${esc(c.source.text)}</p><small>住户 ${esc(c.source.author_name)} · ${stamp(c.source.at)} · 原方案 ${esc((c.original_baseline||c.baseline).reference)}</small><div class="phase">${progress.map(key=>`<span class="${c.status===key || key==='clarifying'&&c.status==='returned'?'active':''}">${statuses[key]}</span>`).join('')}</div></section><div class="change-grid"><div class="stack"><section class="card"><h2>事实与待确认事项</h2>${tag(a.label,'neutral')}${facts?`<ul class="list">${facts}</ul>`:'<p class="muted">原话中的明确事实由各方继续核对。</p>'}<ul class="list">${a.questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ul>${noteAnalysis(c,c.source.text)}<details class="revision"><summary>当前设计与施工依据</summary><dl>${Object.entries(fieldLabels(c)).map(([key,label])=>`<dt>${esc(label)}</dt><dd>${esc(r.data[key]??'待确认')}</dd>`).join('')}</dl></details></section>${c.refund?'':detailsForm(c)+assignmentForm(c)}${sourceForm()}${versionHistory(c)}</div><div class="stack">${nextSteps(c)}${disputePanel(c)}${approvalPanel(c)}${planPanel(c)}${filePanel(c)}</div></div></div>`;
 }
 const photoStatuses={pass:'未发现疑点',fail:'发现疑点',uncertain:'待复核'};
 const photoAxes=[['time','拍摄时间'],['angle','拍摄角度'],['content','画面内容']];
@@ -404,6 +407,13 @@ function kitchenImpact(c,result){
   const quote=state.project.files.find(f=>f.change_id===c.id&&f.reference===k.quote_reference);
   return `<section class="card"><h2>厨房墙砖变更 · 影响对比</h2><p>${esc(k.request)} 新砖调整至 ${esc(k.new_arrival)} 到货。</p><h3>关键工序 · 原开始日与拟议开始日</h3><ul>${timing}</ul><h3>费用与核实人</h3><p>同范围材料报价 ${k.old_quote} → ${k.new_quote} 元，差额 <strong>+${k.new_quote-k.old_quote} 元</strong>。${quote?`<a href="/api/files/${quote.id}">报价 ${esc(k.quote_reference)}</a>`:''}</p><p>瓦工待工费 <strong>待核实</strong> · ${esc(name(k.cost_owner))}</p><p>建议：${esc(k.advice)} 原文依据「${esc(k.evidence)}」。</p><h3>${k.applied?'确认结果':'确认分工'}</h3><p>${k.applied?'设计、施工和住户已确认，项目经理已发布新版排程。':`设计师 ${esc(name(k.drawing_owner))} 核对新版图纸，施工方核对到货和人员档期，住户核对费用。`}</p></section>`;
 }
+function noteAnalysis(c, initial){
+  const previous=state.noteAnalysis?.changeId===c.id?state.noteAnalysis:null;
+  const result=previous?.result;
+  const items=(rows)=>`<ul class="list">${rows.map(item=>`<li><strong>${esc(item.finding)}</strong><p>可能影响：${esc(item.impact)}</p><p>处理建议：${esc(item.action)}</p><small>原文依据：${item.evidence.map(e=>'「'+esc(e)+'」').join(' ')}</small></li>`).join('')}</ul>`;
+  return `<section class="notice"><form id="roadshowNote" class="stack" data-change-id="${esc(c.id)}"><label>待分析的变更说明或施工备注<textarea name="text" required maxlength="500">${esc(previous?.text||initial.slice(0,500))}</textarea></label><button>提取影响和建议</button></form>
+  ${result?`<div class="note-result" aria-live="polite"><strong>${result.mode==='model'?'AI 辅助分析':result.mode==='fallback'?'模型未提供可用结果 · 规则检查':'规则检查'}</strong>${result.items.length?items(result.items):'<p>这段文字没有明确的可核对事项。补上材料日期、班组安排或要改动的工序后可再分析。</p>'}${result.checks?.length?`<div><strong>规则复核</strong>${items(result.checks)}</div>`:''}</div>`:''}</section>`;
+}
 function demoGuide(c,draft,proposal){
   if(!c.kitchen_change||!state.demoProfile)return '';
   const manager=state.user.role==='coordinator';
@@ -412,26 +422,30 @@ function demoGuide(c,draft,proposal){
   const waiting=entries.filter(([k])=>proposal.decisions[k]?.decision!=='approve');
   const mine=waiting.some(([,id])=>id===state.user.id);
   const roadshow=new URLSearchParams(location.search).get('show')==='1'||state.roadshow;
-  let step=1,title='先看看删掉图纸核验会怎样',copy='业主想换厨房墙砖，新砖晚到两天。点下方按钮，系统会检查能否按原计划施工。',action='查看冲突',key='check';
-  if(c.kitchen_change.applied){step=4;title='新版排程已生效';copy='三方确认已留档。施工人员可以查看新版任务，按前置工序逐项执行。';action='切到施工方上传照片';key='tasks';}
+  let title='检查到货变化的影响',copy='核对新砖到货日期是否影响铺贴、班组安排和费用。',action='检查变更影响',key='check';
+  if(c.kitchen_change.applied){title='新版排程已生效';copy='三方确认已留档。施工人员可以查看新版任务，按前置工序逐项执行。';action='切到施工方上传照片';key='tasks';}
   else if(pending){
-    step=3;title='相关人员确认后发布';
+    title='相关人员确认后发布';
     copy=waiting.length?'还在等 '+waiting.map(([,id])=>name(id)).join('、')+' 确认。':'三方已确认，可以发布新版排程。';
     action=mine?'确认本版方案':waiting.length?'切换到下一位确认人':manager?'发布新版排程':'切回项目经理发布';
     key=mine?'confirm':waiting.length?'switch':manager?'publish':'manager';
   }else if(draft?.issues.length){
-    step=2;title='厨房铺砖被拦住了';copy='新版图纸核验不能删。先恢复核验，再按新砖的到货日期重排。正式方案保持原样。';
-    action='恢复核验并查看新排程';key='repair';
+    const missingDrawing=draft.nodes.some(n=>n.id==='preparation'&&!n.included);
+    title=missingDrawing?'厨房铺砖缺少新版图纸核验':'当前排程需要调整';
+    copy=missingDrawing?`核验负责人：${name(c.kitchen_change.drawing_owner)}。恢复核验后，再按新砖到货日安排铺砖。`:'新砖到货时间与原排程有冲突。按新到货日重新核对铺贴时间和班组安排。';
+    action=missingDrawing?'恢复核验并查看新排程':'查看可行排程';key='repair';
   }else if(draft){
-    step=2;title='新排程可以提交确认';
+    title='新排程可以提交确认';
     const old=draft.base.nodes.find(n=>n.id==='installation'),next=draft.nodes.find(n=>n.id==='installation');
     copy='厨房铺砖 '+old.start+' → '+next.start+'。材料报价增加 '+(c.kitchen_change.new_quote-c.kitchen_change.old_quote)+' 元，瓦工待工费待核实。';
     action='提交给三方确认';key='submit';
   }
   if(!manager&&!pending&&!c.kitchen_change.applied){action='切回项目经理';key='manager';}
-  if(roadshow&&pending&&manager&&waiting.some(([k])=>k!=='owner')){key='rehearse';action='准备前两方演示确认';}
-  const note=roadshow&&!c.kitchen_change.applied?`<form id="roadshowNote" class="stack"><label>现场施工备注<textarea name="text" required maxlength="500">${esc(state.noteText||'砖周五才到，瓦工只约了周四。')}</textarea></label><button>分析这句备注</button></form>${state.noteResult?`<div class="notice"><strong>${state.noteResult.mode==='model'?'AI 辅助分析':'规则提示'}</strong>${state.noteResult.items.length?`<ul>${state.noteResult.items.map(item=>`<li>${esc(item.text)}<br><small>原文：${item.evidence.map(e=>'「'+esc(e)+'」').join(' ')}</small></li>`).join('')}</ul>`:'<p>没有提取到可核对的冲突，请确认到货日和班组档期。</p>'}</div>`:''}`:'';
-  return `<section class="card demo-guide"><div class="row between"><strong>${roadshow?'四分钟路演':'跟着演示'} · 第 ${step} 步 / 共 4 步</strong><span>${esc(roles[state.user.role])}</span></div><h2>${title}</h2><p>${esc(copy)}</p>${note}<div class="buttons"><button id="guideAction" data-guide="${key}">${action}</button><button type="button" class="secondary" data-refund-demo>查看返费结果示例</button></div></section>`;
+  const simulate=manager&&!pending&&!c.kitchen_change.applied;
+  const rehearse=pending&&manager&&waiting.some(([kind])=>kind!=='owner');
+  const tools=roadshow&&(simulate||rehearse)?`<details class="revision roadshow-tools"><summary>路演演示工具</summary>${simulate?'<p>模拟只修改演示草稿。</p><button type="button" class="secondary" id="simulateMissingDrawing">模拟缺少图纸核验</button>':'<button type="button" class="secondary" id="rehearseApprovals">准备前两方演示确认</button>'}</details>`:'';
+  const note=!c.kitchen_change.applied?`<details class="revision" ${state.noteAnalysis?.changeId===c.id?'open':''}><summary>分析施工备注</summary>${noteAnalysis(c,'砖周五才到，瓦工只约了周四。')}</details>`:'';
+  return `<section class="card demo-guide"><h2>${title}</h2><p>${esc(copy)}</p><div class="buttons"><button id="guideAction" data-guide="${key}">${action}</button><button type="button" class="secondary" data-refund-demo>查看返费结果示例</button></div>${note}${tools}</section>`;
 }
 function schedulePage(){
   const c=change();
@@ -466,9 +480,9 @@ function schedulePage(){
     return '<li>'+esc(n.title)+' · '+esc(old.start)+' → '+esc(n.start)+' · '+(days>0?'+':'')+days+' 天</li>';
   }).join(''):'';
   const comparison=draft?`<section class="card schedule-comparison"><h2>对比结果</h2>${editable?'<button id="scheduleSave" class="secondary">保留草稿</button>':''}<div class="grid"><div><h3>当前正式计划</h3>${metrics(draft.base_metrics)}</div><div><h3>拟调整排程</h3>${draft.issues.length?'<p class="warn">存在冲突，下列日期为草案推算。</p>':''}${metrics(draft.metrics)}</div></div>${c.kitchen_change?'':'<h3>关键工序日期</h3><ul>'+timing+'</ul>'}${conflicts(draft)}${draft.affected.length?`<p>受影响：${draft.affected.map(n=>esc(n.title)+'（'+esc(n.owner_id?name(n.owner_id):'中介协调')+'）').join('、')}</p>`:''}${draft.alternative?`<h3>候选排程</h3>${metrics(draft.alternative.metrics)}${saving(draft.base_metrics,draft.alternative.metrics)}${table(draft.alternative.nodes)}<button id="scheduleUse" class="secondary">采用候选排程</button>`:'<p>目前无法排出满足约束的候选，请调整前置条件和班组。</p>'}${editable&&(!draft.issues.length||c.kitchen_change)?`<form id="schedulePropose" class="stack"><label>调整原因<textarea name="note" required maxlength="500"></textarea></label><button>${draft.issues.length?'尝试发布 · 检查前置条件':'提交各方确认'}</button></form>`:''}</section>`:'';
-  const full=`<div class="page-head"><h1>工期与排程</h1><p class="muted">查看节点删减或调序对交付、班组和费用的影响。</p></div>${changeToolbar()}<div class="stack">${c.kitchen_change?kitchenImpact(c,draft||proposal?.result):demoBrief(c)}<section class="card"><h2>当前正式排程 · v${view.base.number}</h2>${view.base.inferred?'<p class="notice">旧案例按任务截止日暂列为一天，尚未录入实际班组。请先核对工期输入。</p>':''}${table(view.base.nodes)}${c.kitchen_change&&!c.kitchen_change.applied?'':conflicts(view)}</section>${editable?`<section class="card"><h2>拟定调整</h2><form id="scheduleDraft" class="stack">${table(rows,true)}<div class="fields"><label>延期估算（元 / 天）<input type="number" name="delay" min="0" max="1000000" value="${draft?.fees.delay??''}"></label><label>班组空档估算（元 / 班组日）<input type="number" name="idle" min="0" max="1000000" value="${draft?.fees.idle??''}"></label></div><small>空档为同一班组在本单第一项到最后一项之间未排任务的日数。费用按输入费率估算，留空不估算。</small><div class="buttons"><button>检查并对比</button>${state.project.data.synthetic?`<button type="button" id="scheduleExample" class="secondary">${c.kitchen_change?'A · 误删图纸核验':'填入调序冲突示例'}</button>`:''}</div></form></section>`:''}${comparison}${proposalPanel}</div>`;
+  const full=`<div class="page-head"><h1>工期与排程</h1><p class="muted">查看节点删减或调序对交付、班组和费用的影响。</p></div>${changeToolbar()}<div class="stack">${c.kitchen_change?kitchenImpact(c,draft||proposal?.result):demoBrief(c)}<section class="card"><h2>当前正式排程 · v${view.base.number}</h2>${view.base.inferred?'<p class="notice">旧案例按任务截止日暂列为一天，尚未录入实际班组。请先核对工期输入。</p>':''}${table(view.base.nodes)}${c.kitchen_change&&!c.kitchen_change.applied?'':conflicts(view)}</section>${editable?`<section class="card"><h2>拟定调整</h2><form id="scheduleDraft" class="stack">${table(rows,true)}<div class="fields"><label>延期估算（元 / 天）<input type="number" name="delay" min="0" max="1000000" value="${draft?.fees.delay??''}"></label><label>班组空档估算（元 / 班组日）<input type="number" name="idle" min="0" max="1000000" value="${draft?.fees.idle??''}"></label></div><small>空档为同一班组在本单第一项到最后一项之间未排任务的日数。费用按输入费率估算，留空不估算。</small><div class="buttons"><button>检查并对比</button>${state.project.data.synthetic&&!c.kitchen_change?'<button type="button" id="scheduleExample" class="secondary">填入调序冲突示例</button>':''}</div></form></section>`:''}${comparison}${proposalPanel}</div>`;
   const guide=demoGuide(c,draft,proposal);
-  return guide?`<div class="page-head"><h1>厨房换砖怎么处理？</h1><p class="muted">跟着按钮操作，其他资料可展开查看。</p></div>${guide}<details class="revision guide-details"><summary>查看排程、报价和确认记录</summary>${full}</details>`:full;
+  return guide?`<div class="page-head"><h1>厨房墙砖变更</h1><p class="muted">业主提出更换厨房墙砖，新砖比原计划晚到两天。</p></div>${guide}<details class="revision guide-details" ${draft?.issues.length?'open':''}><summary>查看排程、报价和确认记录</summary>${full}</details>`:full;
 
 }
 function render(){
@@ -554,13 +568,18 @@ function bind(){
     render();
     if(button.dataset.taskFocus)document.getElementById('review-task-'+button.dataset.taskFocus)?.scrollIntoView();
   });
-  bindForm('#homeIssue',async form=>{
-    const id=$('#homeIssue').dataset.changeId;
-    const note=String(form.get('note')).trim();
-    if(!note)throw new Error('请输入现场情况。');
-    const result=await post(`/api/projects/${state.project.id}/changes/${id}/comment`,{revision:state.project.revision,text:'施工问题：'+note});
-    setProject(result);
-    notify('施工问题已记入项目，项目经理可在首页查看。');
+  async function submitSiteIssue(id,note,issue_id){
+    setProject(await post(`/api/projects/${state.project.id}/changes/${id}/site-issue`,{
+      revision:state.project.revision,note,issue_id
+    }));
+    notify(issue_id?'已记录处理结果。':'施工问题已提交给项目经理。');
+  }
+  bindForm('#homeIssue',form=>submitSiteIssue($('#homeIssue').dataset.changeId,form.get('note')));
+  document.querySelectorAll('[data-site-issue]').forEach(form=>{
+    form.onsubmit=event=>{
+      event.preventDefault();
+      busy(event.submitter,()=>submitSiteIssue(form.dataset.changeId,new FormData(form).get('note'),form.dataset.siteIssue));
+    };
   });
   document.querySelectorAll('[data-schedule-change]').forEach(button=>button.onclick=()=>{
     state.changeId=button.dataset.scheduleChange;state.tab='schedule';render();
@@ -573,6 +592,16 @@ function bind(){
     setProject(result.project);
     window.scrollTo(0,0);
   }));
+  bindForm('#roadshowNote',async form=>{
+    const element=$('#roadshowNote');
+    const changeId=element.dataset.changeId;
+    const text=String(form.get('text')).trim();
+    const projectId=state.project.id;
+    const result=await post(`/api/projects/${projectId}/changes/${changeId}/schedule/analyze-note`,{text});
+    if(!element.isConnected)return;
+    state.noteAnalysis={changeId,text,result};
+    render();
+  });
   bindSchedule();
   bindDemoRoles();
   document.querySelectorAll('[data-review-task]').forEach(link=>link.onclick=event=>{
@@ -705,14 +734,19 @@ function bindSchedule(){
   const draft=state.scheduleDraft?.changeId===c.id&&state.scheduleDraft.revision===state.project.revision?state.scheduleDraft.result:(c.schedule_draft||null);
   const proposal=c.schedule_proposals?.at(-1);
   const guide=$('#guideAction');
-  bindForm('#roadshowNote',async form=>{
-    state.noteText=String(form.get('text')).trim();
-    state.noteResult=await post(url+'analyze-note',{text:state.noteText});
-    render();
-  });
+  async function previewKitchen(simulate){
+    const nodes=(simulate?c.schedule_view.base.nodes:(draft?.nodes||c.schedule_view.base.nodes)).map(n=>({...n}));
+    nodes.find(n=>n.id==='materials').start=c.kitchen_change.new_arrival;
+    if(simulate)nodes.find(n=>n.id==='preparation').included=false;
+    await preview(nodes,simulate?{}:(draft?.fees||{}));
+  }
+  const simulation=$('#simulateMissingDrawing');
+  if(simulation)simulation.onclick=()=>busy(simulation,()=>previewKitchen(true));
+  const rehearsal=$('#rehearseApprovals');
+  if(rehearsal)rehearsal.onclick=()=>busy(rehearsal,()=>write('rehearse',{proposal_id:proposal.id}));
   if(guide)guide.onclick=()=>busy(guide,async()=>{
     const action=guide.dataset.guide;
-    if(action==='check')$('#scheduleExample').click();
+    if(action==='check')await previewKitchen(false);
     else if(action==='repair'){
       if(!draft.alternative)throw new Error('暂时没有可行排程，请展开查看冲突。');
       await preview(draft.alternative.nodes,draft.fees);
@@ -720,8 +754,6 @@ function bindSchedule(){
       await write('propose',{nodes:draft.nodes,fees:draft.fees,note:'恢复新版图纸核验，按新砖到货日调整施工。'});
     }else if(action==='confirm'){
       await write('decide',{proposal_id:proposal.id,decision:'approve',note:'已核对当前演示版本与本方条件。'});
-    }else if(action==='rehearse'){
-      await write('rehearse',{proposal_id:proposal.id});
     }else if(action==='switch'){
       const waiting=Object.keys(proposal.approvers).find(k=>proposal.decisions[k]?.decision!=='approve');
       await enterDemo({design:'designer',construction:'contractor',owner:'owner'}[waiting]);
@@ -745,12 +777,6 @@ function bindSchedule(){
     const nodes=c.schedule_view.base.nodes.map(n=>({...n}));
     const install=nodes.find(n=>n.id==='installation');
     if(c.schedule_view.locked.includes('installation'))throw new Error('请在铺贴任务提交前演示调序。');
-    if(c.kitchen_change){
-      nodes.find(n=>n.id==='preparation').included=false;
-      nodes.find(n=>n.id==='materials').start=c.kitchen_change.new_arrival;
-      await preview(nodes,{});
-      return;
-    }
     install.start=nodes.find(n=>n.id==='preparation').start;
     await preview(nodes,{delay:300,idle:450});
   });

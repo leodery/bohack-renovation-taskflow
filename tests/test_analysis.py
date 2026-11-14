@@ -6,10 +6,26 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from analysis_service import analyze
+from analysis_service import analyze, analyze_site_note
 
 
 class AnalysisTest(unittest.TestCase):
+    def test_site_note_rejects_model_placeholder_and_preserves_action(self):
+        text = '砖周五才到，瓦工只约了周四。'
+        response = MagicMock()
+        response.__enter__.return_value = response
+        content = json.dumps({'items': [{'finding': '具体影响与建议',
+            'impact': '可能产生待工', 'action': '联系施工方重新安排',
+            'evidence': ['砖周五才到']}]})
+        response.read.return_value = json.dumps({'choices': [{'message': {'content': content}}]}).encode()
+        with patch.dict(os.environ, {'TASKFLOW_NOTE_URL': 'https://example.invalid',
+                                    'TASKFLOW_NOTE_MODEL': 'test'}), \
+             patch('analysis_service.urllib.request.urlopen', return_value=response):
+            result = analyze_site_note(text)
+        self.assertEqual(result['mode'], 'fallback')
+        self.assertIn('改约瓦工', result['items'][0]['action'])
+        self.assertEqual(result['items'][0]['evidence'], ['砖周五才到', '瓦工只约了周四'])
+
     def test_extracts_requested_layout_instead_of_original(self):
         with patch.dict(os.environ, {'TASKFLOW_MODEL_KEY': ''}):
             result = analyze('客厅与卧室想从分区铺砖改为全屋通铺。')

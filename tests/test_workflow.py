@@ -51,6 +51,19 @@ class WorkflowTest(unittest.TestCase):
     def action(self, role, command, data=None, expected=200):
         return self.post(role, f'/api/projects/{self.pid}/changes/{self.cid}/{command}', {'revision': self.project()['revision'], **(data or {})}, expected)
 
+    def test_site_issue_resolution(self):
+        self.action('owner', 'site-issue', {'note': 'Unauthorized report'}, 403)
+        result = self.action('contractor', 'site-issue', {'note': 'Materials delayed'})
+        issue = result['data']['events'][-1]
+        payload = {'issue_id': issue['id'], 'note': 'Rebooked crew for Friday'}
+        self.action('contractor', 'site-issue', payload, 403)
+        self.action('coordinator', 'site-issue', payload)
+        self.action('coordinator', 'site-issue', payload, 409)
+        events = self.project('contractor')['data']['events']
+        report = next(event for event in events if event['id'] == issue['id'])
+        self.assertEqual(report['resolution']['note'], payload['note'])
+        self.assertEqual(report['resolution']['by'], 'coordinator')
+
     def upload(self, role, kind, reference, content=b'synthetic test evidence', filename=None, expected=200):
         response = self.clients[role].post(f'/api/projects/{self.pid}/changes/{self.cid}/files',
             data={'kind': kind, 'reference': reference, 'revision': str(self.project()['revision']),

@@ -489,6 +489,22 @@ def create_app(data_dir=None, demo_access=False):
                 rules.accept(project, change, g.user, data)
             elif command == 'dispute':
                 rules.handle_dispute(project, change, g.user, data, files(project_id))
+            elif command == 'site-issue':
+                note = rules.required(data.get('note'), '现场情况或处理结果', 500)
+                if g.user['role'] == 'contractor':
+                    rules.check(not data.get('issue_id'), '仅项目经理可处理异常。', 403)
+                    rules.event(project, g.user, '协商留言', '施工问题：' + note, change_id)
+                else:
+                    rules.check(g.user['role'] == 'coordinator', '仅项目经理可处理异常。', 403)
+                    issue = next((event for event in project['events']
+                                  if event['id'] == data.get('issue_id')
+                                  and event['change_id'] == change_id
+                                  and event['action'] == '协商留言'
+                                  and event['detail'].startswith('施工问题：')), None)
+                    rules.check(issue is not None, '未找到本变更的施工异常。', 404)
+                    rules.check(not issue.get('resolution'), '该异常已处理，请刷新查看。', 409)
+                    issue['resolution'] = {'note': note, 'by': g.user['name'], 'at': rules.now()}
+                    rules.event(project, g.user, '施工异常已处理', issue['detail'] + ' → ' + note, change_id)
             elif command == 'comment':
                 rules.event(project, g.user, '协商留言', rules.required(data.get('text'), '留言'), change_id)
             else:
