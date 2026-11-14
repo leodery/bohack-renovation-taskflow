@@ -128,7 +128,7 @@ def create_app(data_dir=None, demo_access=False):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'same-origin'
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
         if request.path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
         return response
@@ -278,17 +278,17 @@ def create_app(data_dir=None, demo_access=False):
         return response
 
     def members(project_id):
-        return [dict(row) for row in db().execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON m.user_id=u.id WHERE m.project_id=? ORDER BY u.name', (project_id,))]
+        return [dict(row) for row in db().execute('SELECT u.id,u.name,u.username,m.role FROM members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY u.name', (project_id,))]
 
     def project_row(project_id):
-        row = db().execute('SELECT p.* FROM projects p JOIN members m ON m.project_id=p.id WHERE p.id=? AND m.user_id=?', (project_id, g.user['id'])).fetchone()
+        row = db().execute('SELECT p.* FROM projects p JOIN members m ON m.project_id=p.id WHERE p.id=? AND m.user_id=?', (project_id, g.user['id'],)).fetchone()
         rules.check(row is not None, '项目不存在或你尚未加入。', 404)
         return row
 
     def files(project_id):
         rows = db().execute('''SELECT f.id,f.project_id,f.change_id,f.version,f.kind,f.reference,f.name,f.size,f.at,
                                u.name AS uploaded_by,r.task_id,r.report
-                               FROM files f JOIN users u ON u.id=f.uploaded_by
+                               FROM files f JOIN u u ON u.id=f.uploaded_by
                                LEFT JOIN photo_reviews r ON r.file_id=f.id
                                WHERE f.project_id=? ORDER BY f.at,f.id''', (project_id,))
         attachments = []
@@ -492,7 +492,7 @@ def create_app(data_dir=None, demo_access=False):
         rules.check(change is not None, '变更不存在。', 404)
         event_id = payload().get('event_id')
         if g.user['role'] == 'owner':
-            participants = {m['id'] for m in members(project_id)
+            participants = {m['id'] for m in members(project)
                             if m['role'] in ('designer', 'contractor', 'coordinator')}
             event = next((e for e in project['events'] if e['id'] == event_id
                           and e['change_id'] == change_id and e['actor_id'] in participants), None)
