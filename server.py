@@ -18,11 +18,14 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 import domain as rules
 from analysis_service import analyze, review_evidence
+from demo_case import PEOPLE, TITLE, populate, prepare_refund
+import schedule
+from photo_review import TASK_STANDARDS, ANGLES, CONTENT, inspect_photo
 
 ROOT = Path(__file__).resolve().parent
 
 
-def create_app(data_dir=None):
+def create_app(data_dir=None, demo_access=False):
     app = Flask(__name__, static_folder='static')
     app.json.ensure_ascii = False
     app.config.update(MAX_CONTENT_LENGTH=10 * 1024 * 1024, MAX_FORM_PARTS=12)
@@ -52,6 +55,12 @@ def create_app(data_dir=None):
             name TEXT NOT NULL, size INTEGER NOT NULL, content BLOB NOT NULL,
             uploaded_by TEXT NOT NULL REFERENCES users(id), at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS auth_limits (ip TEXT PRIMARY KEY, since REAL NOT NULL, attempts INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS demo_profiles (
+            browser_hash TEXT NOT NULL, role TEXT NOT NULL,
+            user_id TEXT UNIQUE NOT NULL REFERENCES users(id),
+            PRIMARY KEY (browser_hash, role));
+        CREATE TABLE IF NOT EXISTS photo_reviews (
+            file_id TEXT PRIMARY KEY REFERENCES files(id), task_id TEXT NOT NULL, report TEXT NOT NULL);
         ''')
     connection.close()
 
@@ -94,7 +103,7 @@ def create_app(data_dir=None):
         if request.method not in ('GET', 'HEAD', 'OPTIONS'):
             origin = request.headers.get('Origin')
             rules.check(not origin or origin == request.host_url.rstrip('/'), '请求来源不匹配。', 403)
-        if request.path in ('/api/register', '/api/login', '/api/health'):
+        if request.path in ('/api/register', '/api/login', '/api/health', '/api/demo-access', '/api/demo-login'):
             return
         token = request.cookies.get('taskflow_session', '')
         row = db().execute('SELECT u.id,u.name,u.username,u.role,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>?',
@@ -148,14 +157,69 @@ def create_app(data_dir=None):
             else:
                 connection.execute('INSERT OR REPLACE INTO auth_limits VALUES(?,?,?)', (ip, time.time(), 1))
 
-    def login_response(user):
+    def login_response(user, **extra):
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         with transaction() as connection:
             connection.execute('DELETE FROM sessions WHERE expires<? OR token_hash=?', (time.time(), token_hash(request.cookies.get('taskflow_session', ''))))
             connection.execute('INSERT INTO sessions VALUES(?,?,?,?)', (token_hash(token), user['id'], csrf, time.time() + 86400 * 7))
-        response = jsonify(user={k: user[k] for k in ('id', 'username', 'name', 'role')}, csrf=csrf)
+        response = jsonify(user={k: user[k] for k in ('id', 'username', 'name', 'role')}, csrf=csrf, **extra)
         response.set_cookie('taskflow_session', token, max_age=86400 * 7, httponly=True, samesite='Lax',
                             secure=os.getenv('TASKFLOW_SECURE_COOKIE') == '1' or request.is_secure)
+        return response
+
+    def demo_available():
+        return (demo_access and request.remote_addr in ('127.0.0.1', '::1')
+                and request.host.partition(':')[0] in ('127.0.0.1', 'localhost'))
+
+    def demo_project_id(actor_id):
+        row = db().execute(
+            """SELECT p.id FROM projects p JOIN members m ON m.project_id=p.id
+               WHERE m.user_id=? AND json_extract(p.data, '$.demo_creator_id')=?""",
+            (actor_id, actor_id)).fetchone()
+        return row['id'] if row else None
+
+    def demo_profiles(browser_token):
+        if not browser_token:
+            return {}
+        return {row['role']: dict(row) for row in db().execute(
+            """SELECT u.id,u.name,u.username,u.role FROM demo_profiles d
+               JOIN users u ON u.id=d.user_id WHERE d.browser_hash=?""", (token_hash(browser_token),))}
+
+    def is_demo_profile():
+        return db().execute('SELECT 1 FROM demo_profiles WHERE user_id=?', (g.user['id'],)).fetchone() is not None
+
+    @app.get('/api/demo-access')
+    def demo_status():
+        available = demo_available()
+        profiles = demo_profiles(request.cookies.get('taskflow_demo', '')) if available else {}
+        coordinator = profiles.get('coordinator')
+        return jsonify(available=available, ready=bool(coordinator and demo_project_id(coordinator['id'])))
+
+    @app.post('/api/demo-login')
+    def demo_login():
+        rules.check(demo_available(), '此服务未开启本机演示登录。', 404)
+        role = payload().get('role')
+        rules.check(isinstance(role, str) and role in ('coordinator', *PEOPLE), '请选择演示身份。')
+        auth_rate_limit()
+        browser_token = request.cookies.get('taskflow_demo', '')
+        with transaction() as connection:
+            profiles = demo_profiles(browser_token)
+            if not profiles:
+                rules.check(role == 'coordinator', '请先选择中介方并创建演示案例。', 409)
+                browser_token = secrets.token_urlsafe(32)
+                for key, name in {'coordinator': '中介方（演示）', **PEOPLE}.items():
+                    uid = rules.ident()
+                    person = {'id': uid, 'username': 'demo_' + uid, 'name': name, 'role': key}
+                    connection.execute('INSERT INTO users VALUES(?,?,?,?,?)', (*person.values(), '!'))
+                    connection.execute('INSERT INTO demo_profiles VALUES(?,?,?)',
+                                       (token_hash(browser_token), key, uid))
+                    profiles[key] = person
+            project_id = demo_project_id(profiles['coordinator']['id'])
+            if role != 'coordinator':
+                rules.check(project_id, '请先选择中介方并创建演示案例。', 409)
+        response = login_response(profiles[role], demo_project_id=project_id)
+        response.set_cookie('taskflow_demo', browser_token, max_age=86400 * 7, httponly=True,
+                            samesite='Strict', secure=request.is_secure)
         return response
 
     @app.post('/api/register')
@@ -191,7 +255,7 @@ def create_app(data_dir=None):
 
     @app.get('/api/me')
     def me():
-        return jsonify(user=g.user, csrf=g.csrf)
+        return jsonify(user=g.user, csrf=g.csrf, demo_profile=is_demo_profile())
 
     @app.post('/api/logout')
     def logout():
@@ -209,7 +273,19 @@ def create_app(data_dir=None):
         return row
 
     def files(project_id):
-        return [dict(row) for row in db().execute('SELECT f.id,f.project_id,f.change_id,f.version,f.kind,f.reference,f.name,f.size,f.at,u.name AS uploaded_by FROM files f JOIN users u ON u.id=f.uploaded_by WHERE project_id=? ORDER BY f.at,f.id', (project_id,))]
+        rows = db().execute('''SELECT f.id,f.project_id,f.change_id,f.version,f.kind,f.reference,f.name,f.size,f.at,
+                               u.name AS uploaded_by,r.task_id,r.report
+                               FROM files f JOIN users u ON u.id=f.uploaded_by
+                               LEFT JOIN photo_reviews r ON r.file_id=f.id
+                               WHERE f.project_id=? ORDER BY f.at,f.id''', (project_id,))
+        attachments = []
+        for row in rows:
+            file = dict(row)
+            report = file.pop('report')
+            if report:
+                file['photo_review'] = json.loads(report)
+            attachments.append(file)
+        return attachments
 
     def project_view(project_id):
         row = project_row(project_id)
@@ -218,8 +294,20 @@ def create_app(data_dir=None):
         for change in project['changes']:
             change['blockers'] = {kind: rules.blockers(change, attachments, kind) for kind in ('design', 'construction', 'owner', 'publish')}
             change['plans'] = rules.plans(change)
+            change['recommendation'] = rules.recommend_plan(change)
+            change['pending_confirmation'] = rules.pending_confirmation(change, attachments)
+            if change['tasks'] and change.get('published_plan'):
+                schedule_plan = schedule.baseline(change)
+                change['schedule_view'] = schedule.preview(change, schedule_plan['nodes'], {})
+                change['schedule_task_locks'] = [t['id'] for t in change['tasks']
+                                                 if schedule.locked_for_change(change, t['id'])]
         return {'id': project_id, 'revision': row['revision'], 'title': row['title'], 'data': project,
-                'members': members(project_id), 'files': attachments}
+                'members': members(project_id), 'files': attachments,
+                'templates': {key: {**{k: template[k] for k in ('name', 'sample', 'design', 'evidence')},
+                                    'task_standards': TASK_STANDARDS[key],
+                                    'photo_criteria': {s['key']: {'angle': ANGLES[s['key']], 'content': CONTENT[s['key']]}
+                                                       for s in template['evidence']}}
+                              for key, template in rules.TEMPLATES.items()}}
 
     @contextmanager
     def edit_project(project_id, expected):
@@ -237,6 +325,7 @@ def create_app(data_dir=None):
     @app.post('/api/projects')
     def create_project():
         rules.check(g.user['role'] == 'coordinator', '请由中介方创建项目并邀请其他参与方。', 403)
+        rules.check(not is_demo_profile(), '演示身份请使用「直接体验示例」。', 403)
         data = payload()
         title = rules.required(data.get('title'), '项目名称', 100)
         baseline = {'version': 1, 'text': rules.required(data.get('baseline'), '原方案说明'),
@@ -259,6 +348,42 @@ def create_app(data_dir=None):
     def get_project(project_id):
         return jsonify(project_view(project_id))
 
+    @app.post('/api/projects/demo')
+    def create_demo():
+        actor = g.user
+        rules.check(actor['role'] == 'coordinator', '请使用中介方账号体验此案例。', 403)
+        with transaction() as connection:
+            project_id = demo_project_id(actor['id'])
+            existing = bool(project_id)
+            if not existing:
+                project_id = rules.ident()
+                connection.execute('INSERT INTO projects VALUES(?,?,?,?)', (project_id, TITLE, 1, '{}'))
+                profiles = demo_profiles(request.cookies.get('taskflow_demo', '')) if demo_available() else {}
+                if profiles.get('coordinator', {}).get('id') == actor['id']:
+                    participants = [profiles[role] for role in PEOPLE]
+                else:
+                    participants = [{'id': rules.ident(), 'name': name, 'role': role} for role, name in PEOPLE.items()]
+                    for person in participants:
+                        connection.execute('INSERT INTO users VALUES(?,?,?,?,?)',
+                                           (person['id'], 'demo_' + person['id'], person['name'], person['role'], '!'))
+                for person in [actor, *participants]:
+                    connection.execute('INSERT INTO members VALUES(?,?,?)',
+                                       (project_id, person['id'], person['role']))
+
+                def add_file(change_id, version, uploader, kind, reference, name, content):
+                    file_id, stamp = rules.ident(), rules.now()
+                    connection.execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                                       (file_id, project_id, change_id, version, kind, reference, name,
+                                        len(content), content, uploader['id'], stamp))
+                    return {'id': file_id, 'change_id': change_id, 'version': version,
+                            'kind': kind, 'reference': reference, 'name': name, 'at': stamp}
+
+                project = populate(actor, participants, add_file, kitchen=os.getenv('TASKFLOW_KITCHEN_DEMO')=='1')
+                project['demo_creator_id'] = actor['id']
+                connection.execute('UPDATE projects SET data=? WHERE id=?',
+                                   (json.dumps(project, ensure_ascii=False), project_id))
+        return jsonify(project_view(project_id)), 200 if existing else 201
+
     @app.post('/api/projects/<project_id>/invitations')
     def invite(project_id):
         rules.check(g.user['role'] == 'coordinator', '仅中介方可邀请项目成员。', 403)
@@ -273,6 +398,7 @@ def create_app(data_dir=None):
 
     @app.post('/api/join')
     def join():
+        rules.check(not is_demo_profile(), '演示身份已分配到自己的案例。', 403)
         data = payload()
         token = rules.required(data.get('token'), '邀请码', 100)
         with transaction() as connection:
@@ -297,11 +423,33 @@ def create_app(data_dir=None):
         rules.check(g.user['role'] == 'owner', '请由住户账号提出装修要求。', 403)
         data = payload()
         text = rules.required(data.get('text'), '住户变更要求')
-        analysis = analyze(text)
+        template_id = data.get('template_id', 'tiles')
+        rules.check(isinstance(template_id, str) and template_id in rules.TEMPLATES, '请选择有效的工序模板。')
+        analysis = analyze(text, template_id)
         with edit_project(project_id, data.get('revision')) as project:
-            change = rules.new_change(project, g.user, text, members(project_id), analysis)
+            change = rules.new_change(project, g.user, text, members(project_id), analysis, template_id)
             change_id = change['id']
         return jsonify(project=project_view(project_id), change_id=change_id), 201
+
+    @app.post('/api/projects/<project_id>/demo-refund')
+    def demo_refund(project_id):
+        rules.check(demo_available() and g.user['role']=='owner' and is_demo_profile(), '仅演示住户可以创建此样例。', 403)
+        data = payload()
+        with edit_project(project_id, data.get('revision')) as project:
+            profiles = demo_profiles(request.cookies.get('taskflow_demo', ''))
+            rules.check(project.get('synthetic') and project.get('demo_creator_id') == profiles.get('coordinator', {}).get('id')
+                        and profiles.get('owner', {}).get('id') == g.user['id'], '仅可在自己的演示项目中操作。', 403)
+            change = next((c for c in project['changes'] if c.get('refund')), None)
+            if not change:
+                def add_file(change, actor, kind, reference, name, description):
+                    fid, at, version = rules.ident(), rules.now(), rules.current(change)['number']
+                    encoded = description.encode()
+                    db().execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                                 (fid, project_id, change['id'], version, kind, reference, name,
+                                  len(encoded), encoded, actor['id'], at))
+                    return {'id': fid, 'kind': kind, 'reference': reference, 'change_id': change['id'], 'at': at}
+                change = prepare_refund(project, g.user, members(project_id), add_file)
+        return jsonify(project=project_view(project_id), change_id=change['id'])
 
     @app.post('/api/projects/<project_id>/changes/<change_id>/<command>')
     def change_action(project_id, change_id, command):
@@ -309,6 +457,7 @@ def create_app(data_dir=None):
         with edit_project(project_id, data.get('revision')) as project:
             change = next((c for c in project['changes'] if c['id'] == change_id), None)
             rules.check(change is not None, '变更不存在。', 404)
+            rules.check(g.user['role'] != 'mediator' or command == 'dispute', '外部复核账号仅能提交争议意见。', 403)
             if command == 'revise':
                 rules.revise(project, change, g.user, data, members(project_id))
             elif command == 'approve':
@@ -316,13 +465,40 @@ def create_app(data_dir=None):
             elif command == 'publish':
                 rules.publish(project, change, g.user, files(project_id))
             elif command == 'task':
+                if data.get('command')=='submit':
+                    rules.check(not schedule.locked_for_change(change, data.get('task_id')),
+                                '本任务涉及尚未生效的变更，须确认并发布后才能执行。',409)
                 rules.handle_task(project, change, g.user, data, files(project_id))
             elif command == 'accept':
                 rules.accept(project, change, g.user, data)
+            elif command == 'dispute':
+                rules.handle_dispute(project, change, g.user, data, files(project_id))
             elif command == 'comment':
                 rules.event(project, g.user, '协商留言', rules.required(data.get('text'), '留言'), change_id)
             else:
                 raise rules.Problem('操作不存在。', 404)
+        return jsonify(project_view(project_id))
+
+    @app.post('/api/projects/<project_id>/changes/<change_id>/schedule/<command>')
+    def schedule_action(project_id, change_id, command):
+        data = payload()
+        if command == 'preview':
+            row = project_row(project_id)
+            project = json.loads(row['data'])
+            rules.check(row['revision'] == data.get('revision'), '项目已由其他成员更新，请刷新。', 409)
+            change = next((c for c in project['changes'] if c['id'] == change_id and c.get('published_plan') and c['tasks']), None)
+            rules.check(change, '请先发布施工计划。', 409)
+            return jsonify(schedule.preview(change, data.get('nodes'), data.get('fees', {})))
+        rules.check(command in ('save', 'propose', 'decide', 'publish'), '操作不存在。', 404)
+        with edit_project(project_id, data.get('revision')) as project:
+            change = next((c for c in project['changes'] if c['id'] == change_id), None)
+            rules.check(change, '变更不存在。', 404)
+            kitchen = change.get('kitchen_change')
+            if kitchen and command in ('propose','publish'):
+                available = {(f['kind'], f['reference']) for f in files(project_id) if f['change_id']==change_id}
+                rules.check({('drawing',kitchen['drawing']),('quote',kitchen['quote_reference'])}<=available,
+                            '缺少新版图纸或换砖报价。', 409)
+            schedule.handle(project, change, g.user, command, data)
         return jsonify(project_view(project_id))
 
     @app.post('/api/projects/<project_id>/changes/<change_id>/files')
@@ -350,16 +526,62 @@ def create_app(data_dir=None):
                 rules.check(not any(rules.approved(change, k) for k in rules.APPROVAL_ROLES), '当前版本已有确认，请先创建修订再补充审批材料。', 409)
             else:
                 rules.check(change['status'] == 'executing', '请在施工任务发布后回传现场记录。', 409)
+                rules.validate_site_reference(reference, rules.work_template(change)['evidence'])
             db().execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                          (rules.ident(), project_id, change_id, rules.current(change)['number'], kind, reference, name,
                           len(content), content, g.user['id'], rules.now()))
             rules.event(project, g.user, '上传资料', name + ' · ' + reference, change_id)
         return jsonify(project_view(project_id))
 
+    @app.post('/api/projects/<project_id>/changes/<change_id>/tasks/<task_id>/photos')
+    def upload_task_photo(project_id, change_id, task_id):
+        row = project_row(project_id)
+        try:
+            expected = int(request.form.get('revision', ''))
+        except ValueError:
+            raise rules.Problem('请刷新页面后再上传。')
+        rules.check(expected == row['revision'], '项目已由其他成员更新，请刷新后重试。', 409)
+        project = json.loads(row['data'])
+        change = next((c for c in project['changes'] if c['id'] == change_id), None)
+        rules.check(change is not None, '变更不存在。', 404)
+        task = next((t for t in change['tasks'] if t['id'] == task_id), None)
+        rules.check(task is not None, '任务不存在。', 404)
+        rules.check(not schedule.locked_for_change(change, task_id), '请先确认并发布施工变更。', 409)
+        rules.check(task['owner_id'] == g.user['id'], '仅任务执行人可上传现场照片。', 403)
+        rules.check(change['status'] == 'executing' and task['status'] in ('ready', 'returned'),
+                    '当前任务没有开放补交。', 409)
+        statuses = {t['id']: t['status'] for t in change['tasks']}
+        rules.check(all(statuses[d] == 'approved' for d in task['depends_on']), '前置任务尚未确认。', 409)
+        template_id = change.get('template_id', 'tiles')
+        key = request.form.get('standard')
+        rules.check(key in TASK_STANDARDS[template_id].get(task_id, ()), '请选择本任务的拍摄标准。')
+        standard = next(s for s in rules.work_template(change)['evidence'] if s['key'] == key)
+        note = rules.required(request.form.get('note'), '拍摄部位与说明', 85)
+        file = request.files.get('file')
+        rules.check(file is not None and file.filename, '请选择照片。')
+        name = file.filename.replace('\\', '/').split('/')[-1][-160:]
+        rules.check(Path(name).suffix.lower() in ('.png', '.jpg', '.jpeg'), '请选择 JPG 或 PNG 原图。')
+        content = file.read(8 * 1024 * 1024 + 1)
+        received = datetime.now(rules.TZ)
+        rules.check(0 < len(content) <= 8 * 1024 * 1024, '照片需在 8 MB 以内。')
+        current_version = rules.current(change)
+        review = inspect_photo(content, received, standard, current_version['data'])
+        file_id = rules.ident()
+        with edit_project(project_id, expected) as stored:
+            db().execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                         (file_id, project_id, change_id, current_version['number'], 'site', key + ' | ' + note,
+                          name, len(content), content, g.user['id'], received.isoformat()))
+            db().execute('INSERT INTO photo_reviews VALUES(?,?,?)',
+                         (file_id, task_id, json.dumps(review, ensure_ascii=False)))
+            rules.event(stored, g.user, '上传工序照片并初审', task['title'] + ' · ' + key + ' · ' + name, change_id)
+        return jsonify(project_view(project_id)), 201
+
     @app.post('/api/projects/<project_id>/changes/<change_id>/evidence-review')
     def evidence_review(project_id, change_id):
+        rules.check(g.user['role'] != 'mediator', '外部复核账号仅能提交争议意见。', 403)
         data = payload()
         view = project_view(project_id)
+        rules.check(data.get('revision') == view['revision'], '项目已由其他成员更新，请刷新后重试。', 409)
         change = next((c for c in view['data']['changes'] if c['id'] == change_id), None)
         rules.check(change is not None, '变更不存在。', 404)
         fields = rules.current(change)['data']
@@ -372,13 +594,26 @@ def create_app(data_dir=None):
             if file['name'].lower().endswith('.txt'):
                 content = db().execute('SELECT content FROM files WHERE id=?', (file['id'],)).fetchone()['content']
                 documents.append({'name': file['name'], 'text': content.decode('utf-8-sig', errors='replace')[:6000]})
-        report = review_evidence(fields, documents, missing)
+        assessment = rules.evidence_assessment(view['files'], change, rules.current(change)['number'])
+        report = review_evidence(fields, documents, missing, candidates, rules.work_template(change)['evidence'])
+        report.update(assessment)
         with edit_project(project_id, data.get('revision')) as project:
             target = next(c for c in project['changes'] if c['id'] == change_id)
             report.update(at=rules.now(), version=rules.current(target)['number'], by=g.user['name'])
             target.setdefault('evidence_reports', []).append(report)
             rules.event(project, g.user, '核对提交材料', f"缺项 {len(missing)} 项，待复核提示 {len(report['findings'])} 项。", change_id)
         return jsonify(project_view(project_id))
+
+    @app.get('/api/files/<file_id>/preview')
+    def preview(file_id):
+        """Inline image preview for site-trace photos; membership is checked."""
+        file = db().execute('SELECT name, content, project_id FROM files WHERE id=?', (file_id,)).fetchone()
+        rules.check(file is not None, '文件不存在。', 404)
+        project_row(file['project_id'])
+        suffix = Path(file['name']).suffix.lower()
+        rules.check(suffix in ('.png', '.jpg', '.jpeg'), '仅支持预览图片留痕。', 400)
+        mime = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg'}[suffix]
+        return send_file(BytesIO(file['content']), mimetype=mime, as_attachment=False)
 
     @app.get('/api/files/<file_id>')
     def download(file_id):
@@ -394,4 +629,6 @@ if __name__ == '__main__':
     from waitress import serve
     port = int(os.getenv('TASKFLOW_PORT', '8765'))
     print(f'工序共识已启动：http://localhost:{port}', flush=True)
-    serve(create_app(), host=os.getenv('TASKFLOW_HOST', '0.0.0.0'), port=port, threads=8, max_request_body_size=10 * 1024 * 1024)
+    host = os.getenv('TASKFLOW_HOST', '0.0.0.0')
+    demo_access = os.getenv('TASKFLOW_DEMO_ACCESS') == '1' and host == '127.0.0.1'
+    serve(create_app(demo_access=demo_access), host=host, port=port, threads=8, max_request_body_size=10 * 1024 * 1024)
