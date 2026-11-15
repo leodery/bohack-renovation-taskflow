@@ -444,28 +444,34 @@ const sitePhotoExamples=[
     note:'演示：发货单FH-1116-01显示11月16日发出12箱暖白墙砖，预计11月17日到，实际签收待核实。'},
   ...casePhotoExamples,
 ];
-function demoPhotoChoices(c, examples, attribute){
-  const selectedExample=[...homeownerExamples,...contractorExamples].find(([, ,text])=>text===c.source.text);
-  const matches=sample=>selectedExample ? sample.caseId===selectedExample[0] : !sample.caseId;
-  const button=({file,label})=>`<button type="button" class="secondary" ${attribute}="${file}">
+function demoCaseId(c){
+  return [...homeownerExamples,...contractorExamples].find(([, ,text])=>text===c.source.text)?.[0];
+}
+function demoPhotoGrid(examples, attribute, caseId){
+  const match=caseId&&examples.find(sample=>sample.caseId===caseId);
+  const ordered=match?[match,...examples.filter(sample=>sample!==match)]:examples;
+  return `<div class="photo-examples">${ordered.map(({file,label})=>`<button type="button" class="secondary" ${attribute}="${file}">
     <img src="/static/demo-photos/${file}" alt="" loading="lazy" width="144" height="96"><span>选用${esc(label)}</span>
-  </button>`;
-  const matching=examples.filter(matches);
-  const other=examples.filter(sample=>!matches(sample));
-  const grid=samples=>`<div class="photo-examples">${samples.map(button).join('')}</div>`;
-  if(!matching.length)return grid(examples);
-  return grid(matching)+`<details class="revision"><summary>更多演示图片</summary>${grid(other)}</details>`;
+  </button>`).join('')}</div>`;
 }
 function evidenceExamplePicker(c){
-  return `<div><strong>试填演示凭据</strong>${demoPhotoChoices(c,evidenceExamples,'data-evidence-example')}
+  return `<div><strong>试填演示凭据</strong>${demoPhotoGrid(evidenceExamples,'data-evidence-example',demoCaseId(c))}
     <p class="muted" id="evidenceSelected" role="status">选好示例后，点击「上传原始凭据」。</p></div>`;
 }
 function photoExamplePicker(c){
   if(!state.project.data.synthetic||c.template_id!=='tiles')return '';
+  const caseId=demoCaseId(c);
+  const groups=[
+    {label:'住户变更示例', photos:sitePhotoExamples.filter(sample=>homeownerExamples.some(([id])=>id===sample.caseId))},
+    {label:'施工方材料变更示例', photos:sitePhotoExamples.filter(sample=>contractorExamples.some(([id])=>id===sample.caseId))},
+    {label:'到货与发货照片', photos:sitePhotoExamples.filter(sample=>!sample.caseId)},
+  ];
   return `<details class="revision"><summary>选择演示照片</summary>
-    ${demoPhotoChoices(c,sitePhotoExamples,'data-site-photo-example')}
-    <p class="muted">合成演示素材。选中后，可点击「上传并初审」。</p>
-    <p class="muted" id="sitePhotoSelected" role="status"></p></details>`;
+    <p class="muted" id="sitePhotoSelected" role="status">选好照片后，点击「上传并初审」。</p>
+    ${groups.map(({label,photos})=>`<section aria-label="${label}"><h3>${label}</h3>
+      ${demoPhotoGrid(photos,'data-site-photo-example',caseId)}
+    </section>`).join('')}
+  </details>`;
 }
 function collaborationPage(){
   const role=state.user.role, owner=role==='owner';
