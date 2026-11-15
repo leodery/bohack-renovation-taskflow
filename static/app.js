@@ -389,7 +389,7 @@ function supplyPanel(c){
     <p><strong>已核实差额：${delta}</strong>${difference!=null&&req.budget!=null&&difference>req.budget?' · 超出住户预算':''}</p>${data.pending?`<p>待核实费用：${esc(data.pending)}</p>`:''}
     <p><a href="/api/files/${esc(data.evidence)}">查看原始凭据</a></p>`:'<p>等待施工方代录并附原始凭据。</p>'}
     ${editable?`<details class="revision"><summary>施工方代录与现场核对</summary>
-    <form id="supplyEvidence" class="stack"><label>报价单、发货单或供应商确认截图<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png,.txt,.docx" required></label>${state.project.data.synthetic?evidenceExamplePicker():''}<button>上传原始凭据</button>${state.project.data.synthetic?'<button type="button" class="secondary" id="demoSupplyEvidence">使用演示报价凭据</button>':''}</form>
+    <form id="supplyEvidence" class="stack"><label>报价单、发货单或供应商确认截图<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png,.txt,.docx" required></label>${state.project.data.synthetic?evidenceExamplePicker(c):''}<button>上传原始凭据</button>${state.project.data.synthetic?'<button type="button" class="secondary" id="demoSupplyEvidence">使用演示报价凭据</button>':''}</form>
     <form id="supplyForm" class="stack"><label>到货状态<select name="arrival_status">${options.map(option=>`<option ${option===(data.arrival_status||'未到货')?'selected':''}>${option}</option>`).join('')}</select></label>
     ${state.project.data.synthetic?'<button type="button" class="secondary" id="supplyExample">填入该状态示例</button>':''}
     <div class="fields">${input('spec','可供规格','text',true)}${input('quantity','可供数量','text',true)}${input('received','实收数量与缺口','text',true)}
@@ -399,17 +399,42 @@ function supplyPanel(c){
     ${input('source','原始凭据来源','text',true)}<label>关联本单凭据<select name="evidence" required><option value="">请选择已上传凭据</option>${files.map(f=>`<option value="${esc(f.id)}" ${data.evidence===f.id?'selected':''}>${esc(f.name)}</option>`).join('')}</select></label></div>
     <button>保存为新版</button></form></details>`:''}</section>`;
 }
+const homeownerExamples=[
+  ['wood','厨房订木色墙砖','厨房想换木色墙砖，共需 12 箱，客厅照旧。最多追加 500 元，请确认到货和开工日。','300×600','500'],
+  ['scope','改铺砖范围','卧室先不铺瓷砖了，客厅照原计划铺。卧室的砖如果还没发货，能退多少钱？','800×800','0'],
+  ['order','调整施工顺序','这几天卧室要腾地方，能不能先铺客厅，下周再铺卧室？帮我看看能不能按原日期交付。','800×800','200'],
+  ['size','更换瓷砖规格','客厅原来选的 800×800 瓷砖想换成 600×1200 的，卧室照旧。门口收边和铺贴费用需要一起确认。','600×1200','800'],
+];
+const contractorExamples=[
+  ['delay','原砖延迟到货','供应商说原定浅灰厨房墙砖赶不上工期，建议换成同规格米白砖。请一起确认颜色、差价和到货时间。'],
+  ['batch','同批次库存不足','客厅剩余瓷砖原批次库存不足，新批次可能有色差。建议先拿样对比，再决定是否补订，已铺区域先保留。'],
+  ['partial','仅到货一部分','客厅的砖已到，卧室的砖要晚两天。建议先复核客厅基层，确认门口接缝后先做客厅，请核对瓦工档期。'],
+  ['discontinued','原型号停供','供应商通知厨房原定墙砖型号停供，推荐同尺寸替代款。请设计师核对颜色和收边，住户确认报价后再订货。'],
+];
+
+const casePhotoExamples=[
+  {caseId:'wood', file:'wood-tile-sample.jpg', standard:'E01', label:'厨房订木色墙砖 · 木色样砖',
+    note:'演示：厨房拟换 300×600 mm 木色墙砖，照片为样砖，12 箱订货及到货情况另核实。'},
+  {caseId:'scope', file:'bedroom-cancellation.jpg', standard:'SHIP', label:'改铺砖范围 · 卧室订单状态',
+    note:'演示：卧室 800×800 mm 地砖未发货，供应商已收到取消请求，退款金额待核实。', evidence:true},
+  {caseId:'order', file:'living-room-subfloor.jpg', standard:'E02', label:'调整施工顺序 · 客厅基层',
+    note:'演示：客厅地面基层与卧室门口现状，供判断是否先铺客厅，平整度和开工时间待核实。'},
+  {caseId:'size', file:'large-format-tile.jpg', standard:'E01', label:'更换瓷砖规格 · 两种样砖对比',
+    note:'演示：客厅原 800×800 mm 与拟用 600×1200 mm 样砖对照，门口收边方案和铺贴费待确认。'},
+  {caseId:'delay', file:'gray-tile-delay.jpg', standard:'SHIP', label:'原砖延迟到货 · 供应商通知',
+    note:'演示：厨房浅灰墙砖延迟，供应商建议换同规格暖白砖，替代砖到货时间待确认。', evidence:true},
+  {caseId:'batch', file:'lot-variation.jpg', standard:'E01', label:'同批次库存不足 · 两批样砖色差',
+    note:'演示：客厅同规格地砖的 A、B 批次样品，供比较色差，已铺区域是否保留以确认方案为准。'},
+  {caseId:'partial', file:'split-room-delivery.jpg', standard:'E01', label:'仅到货一部分 · 客厅地砖到货',
+    note:'演示：客厅地砖已到并拍照。卧室砖预计晚两天，实际签收另核实。'},
+  {caseId:'discontinued', file:'discontinued-wall-tile.jpg', standard:'SHIP', label:'原型号停供 · 替代款通知',
+    note:'演示：厨房原墙砖停供，供应商列出同尺寸替代款，价格和预计到货日待确认。', evidence:true},
+];
 const evidenceExamples=[
   {file:'warm-white-quote.jpg', label:'暖白砖报价单', name:'演示报价单-暖白砖.jpg'},
   {file:'warm-white-dispatch.jpg', label:'暖白砖发货单', name:'演示发货单-暖白砖.jpg'},
+  ...casePhotoExamples.filter(sample=>sample.evidence),
 ];
-function evidenceExamplePicker(){
-  return `<div><strong>试填演示凭据</strong><div class="photo-examples">
-    ${evidenceExamples.map(({file,label},index)=>`<button type="button" class="secondary" data-evidence-example="${index}">
-      <img src="/static/demo-photos/${file}" alt="" loading="lazy" width="144" height="96"><span>选用${label}</span>
-    </button>`).join('')}</div>
-    <p class="muted" id="evidenceSelected" role="status">选好示例后，点击「上传原始凭据」。</p></div>`;
-}
 const sitePhotoExamples=[
   {file:'warm-white-arrival.jpg', standard:'E01', label:'暖白砖到货',
     note:'演示：暖白墙砖到货，照片记录包装标签和砖面。数量与批次另核对到货单。'},
@@ -417,13 +442,29 @@ const sitePhotoExamples=[
     note:'演示：11月15日实收的8箱为错发紫色墙砖，已隔离待退，暂不使用。'},
   {file:'warm-white-dispatch.jpg', standard:'SHIP', label:'暖白砖发货单',
     note:'演示：发货单FH-1116-01显示11月16日发出12箱暖白墙砖，预计11月17日到，实际签收待核实。'},
+  ...casePhotoExamples,
 ];
+function demoPhotoChoices(c, examples, attribute){
+  const selectedExample=[...homeownerExamples,...contractorExamples].find(([, ,text])=>text===c.source.text);
+  const matches=sample=>selectedExample ? sample.caseId===selectedExample[0] : !sample.caseId;
+  const button=({file,label})=>`<button type="button" class="secondary" ${attribute}="${file}">
+    <img src="/static/demo-photos/${file}" alt="" loading="lazy" width="144" height="96"><span>选用${esc(label)}</span>
+  </button>`;
+  const matching=examples.filter(matches);
+  const other=examples.filter(sample=>!matches(sample));
+  const grid=samples=>`<div class="photo-examples">${samples.map(button).join('')}</div>`;
+  if(!matching.length)return grid(examples);
+  return grid(matching)+`<details class="revision"><summary>更多演示图片</summary>${grid(other)}</details>`;
+}
+function evidenceExamplePicker(c){
+  return `<div><strong>试填演示凭据</strong>${demoPhotoChoices(c,evidenceExamples,'data-evidence-example')}
+    <p class="muted" id="evidenceSelected" role="status">选好示例后，点击「上传原始凭据」。</p></div>`;
+}
 function photoExamplePicker(c){
   if(!state.project.data.synthetic||c.template_id!=='tiles')return '';
-  return `<details class="revision"><summary>选择演示照片</summary><div class="photo-examples">
-    ${sitePhotoExamples.map(({file,label},index)=>`<button type="button" class="secondary" data-site-photo-example="${index}">
-      <img src="/static/demo-photos/${file}" alt="" loading="lazy" width="144" height="96"><span>${label}</span>
-    </button>`).join('')}</div><p class="muted">合成演示素材。选中后，可点击「上传并初审」。</p>
+  return `<details class="revision"><summary>选择演示照片</summary>
+    ${demoPhotoChoices(c,sitePhotoExamples,'data-site-photo-example')}
+    <p class="muted">合成演示素材。选中后，可点击「上传并初审」。</p>
     <p class="muted" id="sitePhotoSelected" role="status"></p></details>`;
 }
 function collaborationPage(){
@@ -435,18 +476,8 @@ function collaborationPage(){
   const c=cases.find(c=>c.id===state.changeId)||cases.at(-1);
   const work=c?.collaboration;
   const contractor=role==='contractor';
-  const samples=owner?[
-    ['厨房订木色墙砖','厨房想换木色墙砖，共需 12 箱，客厅照旧。最多追加 500 元，请确认到货和开工日。','300×600','500'],
-    ['改铺砖范围','卧室先不铺瓷砖了，客厅照原计划铺。卧室的砖如果还没发货，能退多少钱？','800×800','0'],
-    ['调整施工顺序','这几天卧室要腾地方，能不能先铺客厅，下周再铺卧室？帮我看看能不能按原日期交付。','800×800','200'],
-    ['更换瓷砖规格','客厅原来选的 800×800 瓷砖想换成 600×1200 的，卧室照旧。门口收边和铺贴费用需要一起确认。','600×1200','800'],
-  ]:[
-    ['原砖延迟到货','供应商说原定浅灰厨房墙砖赶不上工期，建议换成同规格米白砖。请一起确认颜色、差价和到货时间。'],
-    ['同批次库存不足','客厅剩余瓷砖原批次库存不足，新批次可能有色差。建议先拿样对比，再决定是否补订，已铺区域先保留。'],
-    ['仅到货一部分','客厅的砖已到，卧室的砖要晚两天。建议先复核客厅基层，确认门口接缝后先做客厅，请核对瓦工档期。'],
-    ['原型号停供','供应商通知厨房原定墙砖型号停供，推荐同尺寸替代款。请设计师核对颜色和收边，住户确认报价后再订货。'],
-  ];
-  const fillSample=project.data.synthetic?`<details class="revision"><summary>选择示例</summary><div class="buttons">${samples.map(([label,text,spec,budget])=>`<button type="button" class="secondary" data-fill-example data-text="${esc(text)}" data-spec="${esc(spec||'')}" data-budget="${esc(budget||'')}">${esc(label)}</button>`).join('')}</div></details>`:'';
+  const samples=owner?homeownerExamples:contractorExamples;
+  const fillSample=project.data.synthetic?`<details class="revision"><summary>选择示例</summary><div class="buttons">${samples.map(([,label,text,spec,budget])=>`<button type="button" class="secondary" data-fill-example data-text="${esc(text)}" data-spec="${esc(spec||'')}" data-budget="${esc(budget||'')}">${esc(label)}</button>`).join('')}</div></details>`:'';
   const relation=contractor&&cases.length?`<label>关联已有变更（可选）<select name="related_change_id"><option value="">独立问题</option>${cases.map(item=>`<option value="${esc(item.id)}">${esc(item.source.text.slice(0,40))}</option>`).join('')}</select></label><small>同一处换砖优先在原单提出替代方案。仅需单独跟踪的问题可另开关联单。</small>`:'';
   const intake=owner||contractor?`<details class="card" ${c?'':'open'}><summary>${owner?'发起新变更':'新建独立材料变更单'}</summary><form id="newChange" class="stack"><input type="hidden" name="simple" value="true"><label>${owner?'你想改什么？':'什么材料到不了？准备怎么调整？'}<textarea name="text" required maxlength="2000" placeholder="${owner?'例如：厨房墙砖想换成浅色，客厅不用改。':'例如：原定浅灰墙砖无法按期到货，建议换同规格米白砖。'}"></textarea></label>${owner?field('spec','',{label:'期望规格（可选）'})+field('budget','',{label:'最多追加预算（元，可选）',type:'number',min:0,step:'.01'}):''}${relation}${fillSample}<button>发起变更</button></form></details>`:'';
   const heading=owner?'我的装修':role==='designer'?'设计确认':'施工确认';
@@ -1129,13 +1160,13 @@ function bind(){
     });
     evidenceForm.querySelectorAll('[data-evidence-example]').forEach(button=>button.onclick=()=>busy(button,async()=>{
       const selectionId=++evidenceSelection;
-      const sample=evidenceExamples[Number(button.dataset.evidenceExample)];
+      const sample=evidenceExamples.find(item=>item.file===button.dataset.evidenceExample);
       const response=await fetch('/static/demo-photos/'+sample.file);
       const blob=response.ok?await response.blob():null;
       if(!evidenceForm.isConnected||selectionId!==evidenceSelection)return;
       if(!blob)throw new Error('示例图片暂时无法读取。');
       const selection=new DataTransfer();
-      selection.items.add(new File([blob],sample.name,{type:'image/jpeg'}));
+      selection.items.add(new File([blob],sample.name||sample.file,{type:'image/jpeg'}));
       evidenceForm.elements.file.files=selection.files;
       status.textContent='已选 '+sample.label+'。点击「上传原始凭据」提交。';
     }));
@@ -1186,7 +1217,7 @@ function bind(){
     });
     photoForm.querySelectorAll('[data-site-photo-example]').forEach(button=>button.onclick=()=>busy(button,async()=>{
       const version=++selectionVersion;
-      const sample=sitePhotoExamples[Number(button.dataset.sitePhotoExample)];
+      const sample=sitePhotoExamples.find(item=>item.file===button.dataset.sitePhotoExample);
       const response=await fetch('/static/demo-photos/'+sample.file);
       if(!response.ok){
         if(photoForm.isConnected&&version===selectionVersion)throw new Error('示例照片暂时无法读取。');
