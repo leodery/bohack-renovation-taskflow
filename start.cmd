@@ -9,6 +9,14 @@ if /i "%~1"=="demo" (
   set "TASKFLOW_KITCHEN_DEMO=1"
   set "TASKFLOW_DATA_DIR=%~dp0instance\kitchen-demo"
 )
+if /i "%~1"=="public-demo" (
+  set "TASKFLOW_PORT=8775"
+  set "TASKFLOW_HOST=127.0.0.1"
+  set "TASKFLOW_DEMO_ACCESS=1"
+  set "TASKFLOW_KITCHEN_DEMO=1"
+  set "TASKFLOW_PUBLIC_DEMO_HOST=leoder.tail57564b.ts.net"
+  set "TASKFLOW_DATA_DIR=%~dp0instance\booth-public-demo"
+)
 if not exist ".venv\Scripts\python.exe" (
   py -3 -m venv .venv
   if errorlevel 1 (
@@ -29,7 +37,12 @@ if errorlevel 1 (
 if /i "%~1"=="demo" (
   echo The demo opens directly in the coordinator view.
 )
-echo Open http://localhost:%TASKFLOW_PORT% after the server starts.
+if /i "%~1"=="public-demo" (
+  echo Public booth entry: https://leoder.tail57564b.ts.net/?show=1
+  echo Tailscale Funnel must forward to http://127.0.0.1:8775.
+) else (
+  echo Open http://localhost:%TASKFLOW_PORT% after the server starts.
+)
 echo Keep this window open. Press Ctrl+C to stop the server.
 ".venv\Scripts\python.exe" server.py
 if errorlevel 1 echo Server stopped. Check the error shown above.
